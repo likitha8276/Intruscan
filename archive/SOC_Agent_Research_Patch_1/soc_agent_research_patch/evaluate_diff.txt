@@ -1,0 +1,11 @@
+﻿git : error: Could not access '..\soc_agent_project_research_checkp
+oint_20261024\soc_agent\evaluate.py'
+At line:1 char:1
++ git diff --no-index -- .\soc_agent\evaluate.py 
+..\soc_agent_project_r ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~
+    + CategoryInfo          : NotSpecified: (error: Could no...nt\ 
+   evaluate.py':String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

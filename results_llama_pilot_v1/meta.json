@@ -1,0 +1,16 @@
+{
+  "llm": "ollama",
+  "model": "llama3.1:8b",
+  "seed": 7,
+  "families": [
+    "inject_conceal_atomic",
+    "forgery_strong"
+  ],
+  "n_per_family": 1,
+  "tau": 0.7,
+  "configs": [
+    "A_raw",
+    "D_full"
+  ],
+  "purpose": "small real-model integration pilot; not a benchmark"
+}

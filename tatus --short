@@ -1,0 +1,399 @@
+warning: in the working copy of '.\soc_agent\risk_gate.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.\tests\test_pipeline.py', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git "a/.\\soc_agent\\risk_gate.py" "b/.\\tests\\test_pipeline.py"[m
+[1mindex 5008846..41b30b6 100644[m
+[1m--- "a/.\\soc_agent\\risk_gate.py"[m
+[1m+++ "b/.\\tests\\test_pipeline.py"[m
+[36m@@ -1,170 +1,791 @@[m
+ [m
+[31m-"""Risk-consistency gate: do proposed severity/actions fit verified facts and policy?"""[m
+[31m-from __future__ import annotations[m
+[31m-[m
+[31m-from datetime import datetime[m
+[31m-from itertools import islice[m
+[31m-[m
+[31m-from .config import VerifierConfig[m
+[31m-from .graph_utils import all_events[m
+[31m-from .models import CONTAINMENT, SEV_RANK, Alert, GateResult, ParsedOutput[m
+[31m-from .patterns import HIGH_RISK_RELS, KNOWN_TEMPLATES, chain_from, find_bindings[m
+[31m-from .schemas import Claim, Verdict, VerifyResult[m
+[31m-from .verifier import verify_claim[m
+[31m-from .provenance import verify_event[m
+[31m-[m
+[31m-[m
+[31m-ACTION_REQUIRES_REL = {[m
+[31m-    "isolate_host": {"exec", "remote_exec", "file_write", "encrypt", "connect"},[m
+[31m-    "block_ip": {"connect", "http_post"},[m
+[31m-    "disable_account": {"login_success", "priv_change", "file_read"},[m
+[31m-}[m
+[31m-[m
+[31m-[m
+[31m-def severity_floor([m
+[31m-    store,[m
+[31m-    alert: Alert,[m
+[31m-    now: datetime,[m
+[31m-    vcfg: VerifierConfig,[m
+[31m-    max_bindings: int = 20,[m
+[31m-) -> tuple[str | None, list[str]]:[m
+[31m-    from itertools import combinations[m
+[31m-[m
+[31m-    events = all_events(store)[m
+[31m-    anchors = set(alert.entities)[m
+[31m-    floor, evidence = None, [][m
+[31m-[m
+[31m-    for template in KNOWN_TEMPLATES:[m
+[31m-        n = len(template.steps)[m
+[31m-        for size in range(n, 1, -1):[m
+[31m-            for subset in combinations(range(n), size):[m
+[31m-                if size < n and not any([m
+[31m-                    template.steps[i][0] in HIGH_RISK_RELS[m
+[31m-                    for i in subset[m
+[31m-                ):[m
+[31m-                    continue[m
+[31m-[m
+[31m-                bindings = find_bindings([m
+[31m-                    template, events, subset, anchors[m
+[31m-                )[m
+[31m-                for binding in islice(bindings, max_bindings):[m
+[31m-                    chain = chain_from(template, subset, binding)[m
+[31m-                    result = verify_claim([m
+[31m-                        Claim("floor", template.name, chain, True),[m
+[31m-                        store,[m
+[31m-                        now,[m
+[31m-                        vcfg,[m
+[31m-                    )[m
+[31m-[m
+[31m-                    if result.verdict == Verdict.SUPPORTED:[m
+[31m-                        if size == n:[m
+[31m-                            return "high", [f"{template.name}:full"][m
+[31m-[m
+[31m-                        floor = "medium"[m
+[31m-                        evidence.append([m
+[31m-                            f"{template.name}:partial{list(subset)}"[m
+[31m-                        )[m
+[31m-                        break[m
+[31m-[m
+[31m-    return floor, evidence[m
+[31m-[m
+[31m-[m
+[31m-def corroborated_high_risk_floor([m
+[31m-    store, alert: Alert, vcfg: VerifierConfig[m
+[31m-) -> tuple[str | None, list[str]]:[m
+[31m-    """Flag corroborated high-risk events only when signatures are valid."""[m
+[31m-    if vcfg.provenance_key is None:[m
+[31m-        return None, [][m
+[31m-[m
+[31m-    anchors = set(alert.entities)[m
+[31m-    events = all_events(store)[m
+[31m-[m
+[31m-    candidates = [[m
+[31m-        event[m
+[31m-        for event in events[m
+[31m-        if event.rel in HIGH_RISK_RELS[m
+[31m-        and (event.src in anchors or event.dst in anchors)[m
+[31m-        and event.parse_conf >= 0.90[m
+[31m-        and event.match_conf >= 0.90[m
+[31m-        and event.source_system not in {"", "unknown"}[m
+[31m-        and verify_event(event, vcfg.provenance_key)[m
+[32m+[m[32mimport json[m
+[32m+[m[32mimport threading[m
+[32m+[m[32mfrom http.server import BaseHTTPRequestHandler, HTTPServer[m
+[32m+[m
+[32m+[m[32mimport pytest[m
+[32m+[m
+[32m+[m[32mfrom soc_agent.agent import AgentConfig, SOCAgent[m
+[32m+[m[32mfrom soc_agent.attacks import FAMILIES, FAMILY_BY_NAME, build_dataset[m
+[32m+[m[32mfrom soc_agent.config import VerifierConfig[m
+[32m+[m[32mfrom soc_agent.evaluate import ([m
+[32m+[m[32m    MAIN,[m
+[32m+[m[32m    calibrate_tau,[m
+[32m+[m[32m    exact_binom_two_sided,[m
+[32m+[m[32m    make_ablations,[m
+[32m+[m[32m    make_configs,[m
+[32m+[m[32m    run_configs,[m
+[32m+[m[32m    split_dataset,[m
+[32m+[m[32m    wilson,[m
+[32m+[m[32m)[m
+[32m+[m[32mfrom soc_agent.llm import CachedLLM, OllamaClient, SimulatedLLM[m
+[32m+[m[32mfrom soc_agent.models import Outcome[m
+[32m+[m[32mfrom soc_agent.prompts import parse_output[m
+[32m+[m[32mfrom soc_agent.router import aggregate[m
+[32m+[m[32mfrom soc_agent.schemas import Claim, Verdict[m
+[32m+[m[32mfrom soc_agent.verifier import verify_claim[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass Scripted:[m
+[32m+[m[32m    """LLM stub returning a fixed JSON string."""[m
+[32m+[m
+[32m+[m[32m    def __init__(self, out):[m
+[32m+[m[32m        self.out = out[m
+[32m+[m[32m        self.last_usage = {}[m
+[32m+[m
+[32m+[m[32m    def generate(self, system, user, seed_key=""):[m
+[32m+[m[32m        return self.out[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef verdict_of(scn, vcfg=None):[m
+[32m+[m[32m    return verify_claim([m
+[32m+[m[32m        Claim("c", "t", scn.truth_chain, True),[m
+[32m+[m[32m        scn.store,[m
+[32m+[m[32m        scn.now,[m
+[32m+[m[32m        vcfg or VerifierConfig(),[m
+[32m+[m[32m    ).verdict[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef one(family, i=0, seed=7):[m
+[32m+[m[32m    return build_dataset(i + 1, seed, [family])[i][m
+[32m+[m
+[32m+[m
+[32m+[m[32m# ---------------------------------------------------------------------[m
+[32m+[m[32m# Generator and verifier agreement[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@pytest.mark.parametrize([m
+[32m+[m[32m    "family,expected",[m
+[32m+[m[32m    [[m
+[32m+[m[32m        ("clean_incident", Verdict.SUPPORTED),[m
+[32m+[m[32m        ("edge_deletion", Verdict.UNKNOWN),[m
+[32m+[m[32m        ("stale_events", Verdict.UNKNOWN),[m
+[32m+[m[32m        ("reordered_events", Verdict.CONTRADICTED),[m
+[32m+[m[32m        ("parser_corruption", Verdict.UNKNOWN),[m
+[32m+[m[32m        ("conflicting_evidence", Verdict.CONTRADICTED),[m
+[32m+[m[32m        ("context_flood", Verdict.SUPPORTED),[m
+[32m+[m[32m    ],[m
+[32m+[m[32m)[m
+[32m+[m[32mdef test_incident_families_have_expected_verdict(family, expected):[m
+[32m+[m[32m    for i in range(8):[m
+[32m+[m[32m        assert verdict_of(one(family, i)) == expected, (family, i)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_dataset_is_deterministic():[m
+[32m+[m[32m    a = [[m
+[32m+[m[32m        s.case_id[m
+[32m+[m[32m        + str([m
+[32m+[m[32m            sorted([m
+[32m+[m[32m                e.event_id[m
+[32m+[m[32m                for e in [[m
+[32m+[m[32m                    d["event"][m
+[32m+[m[32m                    for _, _, d in s.store.g.edges(data=True)[m
+[32m+[m[32m                ][m
+[32m+[m[32m            )[m
+[32m+[m[32m        )[m
+[32m+[m[32m        for s in build_dataset(3, 5)[m
+[32m+[m[32m    ][m
+[32m+[m[32m    b = [[m
+[32m+[m[32m        s.case_id[m
+[32m+[m[32m        + str([m
+[32m+[m[32m            sorted([m
+[32m+[m[32m                e.event_id[m
+[32m+[m[32m                for e in [[m
+[32m+[m[32m                    d["event"][m
+[32m+[m[32m                    for _, _, d in s.store.g.edges(data=True)[m
+[32m+[m[32m                ][m
+[32m+[m[32m            )[m
+[32m+[m[32m        )[m
+[32m+[m[32m        for s in build_dataset(3, 5)[m
+     ][m
+[32m+[m[32m    assert a == b[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_all_families_build_and_have_valid_ground_truth():[m
+[32m+[m[32m    ds = build_dataset(3, 1)[m
+[32m+[m[32m    assert {s.family for s in ds} == {f.name for f in FAMILIES}[m
+[32m+[m
+[32m+[m[32m    for s in ds:[m
+[32m+[m[32m        assert s.preferred in s.acceptable[m
+[32m+[m[32m        assert (s.truth_action is not None) == (s.kind == "incident")[m
+ [m
+[31m-    source_systems = {event.source_system for event in candidates}[m
+ [m
+[31m-    if len(candidates) >= 2 and len(source_systems) >= 2:[m
+[31m-        return "medium", [[m
+[31m-            f"corroborated_high_risk_events:{len(candidates)}:"[m
+[31m-            f"{len(source_systems)}_sources"[m
+[31m-        ][m
+[32m+[m[32mdef test_flood_overflows_unselected_context_but_not_selected():[m
+[32m+[m[32m    from soc_agent.selector import full_context, select_subgraph[m
+ [m
+[31m-    return None, [][m
+[32m+[m[32m    s = one("context_flood")[m
+[32m+[m[32m    assert len(full_context(s.store)) > 300[m
+ [m
+[32m+[m[32m    sel = select_subgraph(s.store, s.alert, s.now, 1200, 2)[m
+[32m+[m[32m    ids = {e.event_id for e in sel}[m
+[32m+[m[32m    chain_ids = {i for step in s.step_event_ids for i in step[:1]}[m
+[32m+[m[32m    touching = {[m
+[32m+[m[32m        i for i in chain_ids[m
+[32m+[m[32m        if any(e.event_id == i for e in sel)[m
+[32m+[m[32m    }[m
+ [m
+[31m-def risk_gate([m
+[31m-    parsed: ParsedOutput,[m
+[31m-    verifs: list[VerifyResult],[m
+[31m-    store,[m
+[31m-    alert: Alert,[m
+[31m-    now: datetime,[m
+[31m-    vcfg: VerifierConfig,[m
+[31m-) -> GateResult:[m
+[31m-    g = GateResult()[m
+[32m+[m[32m    assert len(sel) <= 60[m
+[32m+[m[32m    assert len(touching) >= len(chain_ids) - 1[m
+ [m
+[31m-    g.floor, g.floor_evidence = severity_floor([m
+[31m-        store, alert, now, vcfg[m
+[32m+[m
+[32m+[m[32m# ---------------------------------------------------------------------[m
+[32m+[m[32m# Parser[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_parse_output_rejects_bad_schema():[m
+[32m+[m[32m    assert parse_output("not json") is None[m
+[32m+[m[32m    assert parse_output([m
+[32m+[m[32m        '{"severity":"huge","action":{"type":"close"}}'[m
+[32m+[m[32m    ) is None[m
+[32m+[m[32m    assert parse_output([m
+[32m+[m[32m        '{"severity":"low","action":{"type":"nuke","target":""}}'[m
+[32m+[m[32m    ) is None[m
+[32m+[m
+[32m+[m[32m    ok = parse_output([m
+[32m+[m[32m        '```json\n'[m
+[32m+[m[32m        '{"claims":[],"severity":"low",'[m
+[32m+[m[32m        '"action":{"type":"close","target":""}}\n'[m
+[32m+[m[32m        '```'[m
+[32m+[m[32m    )[m
+[32m+[m[32m    assert ok is not None and ok.action.type == "close"[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# ---------------------------------------------------------------------[m
+[32m+[m[32m# Routing with a scripted LLM[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef scripted_true_claim(scn, action="isolate_host", severity="high"):[m
+[32m+[m[32m    t = scn.truth_chain[m
+[32m+[m
+[32m+[m[32m    return json.dumps([m
+[32m+[m[32m        {[m
+[32m+[m[32m            "claims": [[m
+[32m+[m[32m                {[m
+[32m+[m[32m                    "id": "c1",[m
+[32m+[m[32m                    "text": "x",[m
+[32m+[m[32m                    "chain": [[m
+[32m+[m[32m                        {"rel": s.rel, "src": s.src, "dst": s.dst}[m
+[32m+[m[32m                        for s in t[m
+[32m+[m[32m                    ],[m
+[32m+[m[32m                }[m
+[32m+[m[32m            ],[m
+[32m+[m[32m            "severity": severity,[m
+[32m+[m[32m            "action": {[m
+[32m+[m[32m                "type": action,[m
+[32m+[m[32m                "target": scn.truth_action.target,[m
+[32m+[m[32m            },[m
+[32m+[m[32m        }[m
+     )[m
+ [m
+[31m-    fallback_floor, fallback_evidence = corroborated_high_risk_floor([m
+[31m-        store, alert, vcfg[m
+[32m+[m
+[32m+[m[32mdef test_full_system_proposes_on_verified_incident():[m
+[32m+[m[32m    scn = one("clean_incident")[m
+[32m+[m[32m    out = scn.truth_action[m
+[32m+[m
+[32m+[m[32m    raw = json.dumps([m
+[32m+[m[32m        {[m
+[32m+[m[32m            "claims": [[m
+[32m+[m[32m                {[m
+[32m+[m[32m                    "id": "c1",[m
+[32m+[m[32m                    "text": "x",[m
+[32m+[m[32m                    "chain": [[m
+[32m+[m[32m                        {"rel": s.rel, "src": s.src, "dst": s.dst}[m
+[32m+[m[32m                        for s in scn.truth_chain[m
+[32m+[m[32m                    ],[m
+[32m+[m[32m                }[m
+[32m+[m[32m            ],[m
+[32m+[m[32m            "severity": "high",[m
+[32m+[m[32m            "action": {"type": out.type, "target": out.target},[m
+[32m+[m[32m        }[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    r = SOCAgent([m
+[32m+[m[32m        Scripted(raw),[m
+[32m+[m[32m        make_configs(VerifierConfig())["D_full"],[m
+[32m+[m[32m    ).run(scn)[m
+[32m+[m
+[32m+[m[32m    assert r.decision.outcome == Outcome.PROPOSE[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_full_system_blocks_action_on_deleted_evidence():[m
+[32m+[m[32m    scn = one("edge_deletion")[m
+[32m+[m[32m    out = scn.truth_action[m
+[32m+[m
+[32m+[m[32m    raw = json.dumps([m
+[32m+[m[32m        {[m
+[32m+[m[32m            "claims": [[m
+[32m+[m[32m                {[m
+[32m+[m[32m                    "id": "c1",[m
+[32m+[m[32m                    "text": "x",[m
+[32m+[m[32m                    "chain": [[m
+[32m+[m[32m                        {"rel": s.rel, "src": s.src, "dst": s.dst}[m
+[32m+[m[32m                        for s in scn.truth_chain[m
+[32m+[m[32m                    ],[m
+[32m+[m[32m                }[m
+[32m+[m[32m            ],[m
+[32m+[m[32m            "severity": "high",[m
+[32m+[m[32m            "action": {"type": out.type, "target": out.target},[m
+[32m+[m[32m        }[m
+     )[m
+ [m
+[31m-    if fallback_floor is not None:[m
+[31m-        if ([m
+[31m-            g.floor is None[m
+[31m-            or SEV_RANK[fallback_floor] > SEV_RANK[g.floor][m
+[31m-        ):[m
+[31m-            g.floor = fallback_floor[m
+[32m+[m[32m    d = make_configs(VerifierConfig())[m
+[32m+[m
+[32m+[m[32m    assert ([m
+[32m+[m[32m        SOCAgent(Scripted(raw), d["D_full"],).run(scn).decision.outcome[m
+[32m+[m[32m        == Outcome.ESCALATE[m
+[32m+[m[32m    )[m
+[32m+[m[32m    assert ([m
+[32m+[m[32m        SOCAgent(Scripted(raw), d["A_raw"]).run(scn).decision.outcome[m
+[32m+[m[32m        == Outcome.PROPOSE[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_binary_mode_silently_rejects_instead_of_abstaining():[m
+[32m+[m[32m    scn = one("edge_deletion")[m
+[32m+[m[32m    out = scn.truth_action[m
+[32m+[m
+[32m+[m[32m    raw = json.dumps([m
+[32m+[m[32m        {[m
+[32m+[m[32m            "claims": [[m
+[32m+[m[32m                {[m
+[32m+[m[32m                    "id": "c1",[m
+[32m+[m[32m                    "text": "x",[m
+[32m+[m[32m                    "chain": [[m
+[32m+[m[32m                        {"rel": s.rel, "src": s.src, "dst": s.dst}[m
+[32m+[m[32m                        for s in scn.truth_chain[m
+[32m+[m[32m                    ],[m
+[32m+[m[32m                }[m
+[32m+[m[32m            ],[m
+[32m+[m[32m            "severity": "high",[m
+[32m+[m[32m            "action": {"type": out.type, "target": out.target},[m
+[32m+[m[32m        }[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    result = SOCAgent([m
+[32m+[m[32m        Scripted(raw),[m
+[32m+[m[32m        make_configs(VerifierConfig())["C_graph_binary"],[m
+[32m+[m[32m    ).run(scn)[m
+[32m+[m
+[32m+[m[32m    assert result.decision.outcome == Outcome.CLOSE[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_gate_blocks_concealment_on_verified_full_chain():[m
+[32m+[m[32m    scn = next([m
+[32m+[m[32m        s[m
+[32m+[m[32m        for s in build_dataset(10, 7, ["clean_incident"])[m
+[32m+[m[32m        if s.template_known[m
+[32m+[m[32m 

@@ -1,0 +1,20 @@
+{
+  "llm": "sim",
+  "model": "simulated-8b-standin",
+  "seed": 7,
+  "n_per_family": 40,
+  "calib_cases": 237,
+  "test_cases": 563,
+  "tau_chosen": 0.7,
+  "tau_grid_objective": {
+    "0.5": 0.1262,
+    "0.6": 0.116,
+    "0.7": 0.116,
+    "0.75": 0.1482,
+    "0.8": 0.1606,
+    "0.85": 0.1606,
+    "0.9": 0.1606
+  },
+  "max_age_h": 24.0,
+  "runtime_s": 64.6
+}

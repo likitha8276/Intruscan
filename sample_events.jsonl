@@ -1,0 +1,2 @@
+{"event_id":"e1","ts":"2026-10-23T10:00:00Z","rel":"login_success","src":"user-1","dst":"host-a","source_system":"auth-server"}
+{"event_id":"e2","ts":"2026-10-23T10:01:00Z","rel":"exec","src":"host-a","dst":"suspicious-process","source_system":"endpoint-agent"}
