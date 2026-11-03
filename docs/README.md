@@ -42,6 +42,22 @@ python -m soc_agent.cli triage --events events.jsonl --entity host-a --llm ollam
 source_system, parse_conf, match_conf`. The graph layer only has to implement
 `find(rel, src, dst) -> list[Event]` for the verifier, plus event iteration for the selector.
 
+**Layer 1 → Layer 2 flow path.** A local JSONL ingestion and Fast Brain
+scoring pipeline is documented in [ingestion/README.md](../ingestion/README.md).
+It archives canonical flow records in SQLite, trains on records labeled
+`benign`, and emits anomaly scores and route decisions. It does not require
+Kafka and is separate from the Layer 4 graph-event JSONL consumed by
+`soc_agent.cli`.
+For UGR'16 CSV, [parse_ugr16.py](../tools/parse_ugr16.py) streams records to
+JSONL; then `soc_agent.fast_brain_cli` can train on the dataset's selected
+normal label and score the converted JSONL directly.
+Use [calibrate_thresholds.py](../tools/calibrate_thresholds.py) on the scored,
+labeled JSONL to inspect percentile-based cutoff suggestions and the score
+histogram; validate any chosen cutoffs on held-out traffic.
+Then [slow_brain_handoff.py](../tools/slow_brain_handoff.py) forwards only
+`SLOW_BRAIN` flows to the Layer 4 CLI and appends the SOC decision to
+`final_soc_alerts.jsonl`.
+
 ## How the verifier decides
 
 A claim carries a chain of required facts. For each step the verifier checks, in order: the edge exists

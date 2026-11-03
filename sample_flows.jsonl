@@ -1,0 +1,4 @@
+{"flow_id":"demo-001","timestamp":"2026-11-03T10:00:00Z","src_ip":"10.0.0.10","dst_ip":"10.0.0.20","src_port":51001,"dst_port":443,"protocol":"tcp","packets":12,"bytes":8400,"duration_ms":125.5,"label":"benign"}
+{"flow_id":"demo-002","timestamp":"2026-11-03T10:01:00Z","src_ip":"10.0.0.11","dst_ip":"10.0.0.21","src_port":51002,"dst_port":443,"protocol":"tcp","packets":18,"bytes":12400,"duration_ms":240.0,"label":"benign"}
+{"flow_id":"demo-003","timestamp":"2026-11-03T10:02:00Z","src_ip":"10.0.0.12","dst_ip":"10.0.0.22","src_port":51003,"dst_port":53,"protocol":"udp","packets":4,"bytes":620,"duration_ms":18.0,"label":"benign"}
+{"flow_id":"demo-004","timestamp":"2026-11-03T10:03:00Z","src_ip":"10.0.0.13","dst_ip":"10.0.0.23","src_port":51004,"dst_port":443,"protocol":"tcp","packets":15000,"bytes":9200000,"duration_ms":8.0,"label":"attack"}

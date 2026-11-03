@@ -2,3 +2,5 @@ networkx>=3.2
 langgraph>=0.2
 matplotlib>=3.8
 pytest>=8.0
+scikit-learn>=1.4
+pandas>=2.0
