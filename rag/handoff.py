@@ -1,7 +1,7 @@
 """RAG-enriched handoff: group SLOW_BRAIN flows into per-source incidents and call the
 Layer 4 SOC CLI once per incident (same CLI flags as tools/slow_brain_handoff.py).
 
-python -m rag.handoff --scored scored_flows.jsonl --output rag_soc_alerts.jsonl --model llama3.1:8b
+python -m rag.handoff --scored scored_flows.jsonl --output rag_soc_alerts.jsonl --llm groq --model openai/gpt-oss-20b
 """
 import argparse, json, logging, subprocess, sys, tempfile
 from collections import defaultdict
@@ -17,7 +17,7 @@ def _err(status, reason, stdout="", stderr=""):
             "reasons": [reason], "stdout": stdout, "stderr": stderr}
 
 
-def run_incident(src, events, logs, python, model, host, config, timeout, root, max_entities=5, llm="ollama"):
+def run_incident(src, events, logs, python, model, host, config, timeout, root, max_entities=5, llm="groq"):
     with tempfile.TemporaryDirectory(prefix="rag-incident-") as d:
         ev, lg = Path(d) / "events.jsonl", Path(d) / "logs.json"
         ev.write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
@@ -47,9 +47,9 @@ def run_incident(src, events, logs, python, model, host, config, timeout, root, 
     return out
 
 
-def run(scored, output, index, python=sys.executable, model="llama3.1:8b",
+def run(scored, output, index, python=sys.executable, model="openai/gpt-oss-20b",
         host="http://localhost:11434", config="D_full", timeout=300.0,
-        max_events=12, root=PROJECT_ROOT, baseline_path=None, baseline_label=None, llm="ollama"):
+        max_events=12, root=PROJECT_ROOT, baseline_path=None, baseline_label=None, llm="groq"):
     events, logs, skipped = build(scored, index, baseline_path=baseline_path, baseline_label=baseline_label)
     groups = defaultdict(list)
     for e in events:
@@ -84,9 +84,8 @@ def main():
     ap.add_argument("--mitre", choices=["seed", "full"], default="full")
     ap.add_argument("--mitre-scope", choices=["network", "flow", "all"], default="network")
     ap.add_argument("--python", default=sys.executable)
-    ap.add_argument("--llm", choices=["ollama", "sim"], default="ollama",
-                    help="sim = the agent layer's built-in simulated LLM, for testing the plumbing without Ollama")
-    ap.add_argument("--model", default="llama3.1:8b")
+    ap.add_argument("--llm", choices=["groq"], default="groq")
+    ap.add_argument("--model", default="openai/gpt-oss-20b")
     ap.add_argument("--host", default="http://localhost:11434")
     ap.add_argument("--config", default="D_full")
     ap.add_argument("--timeout", type=float, default=300.0)

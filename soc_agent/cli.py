@@ -1,6 +1,7 @@
 """Command line: triage an alert against a JSONL event file with the chosen configuration.
 
-    python -m soc_agent.cli triage --events events.jsonl --entity host-a --llm ollama --model llama3.1:8b
+
+python -m soc_agent.cli triage --events events.jsonl --entity host-a --llm groq --model openai/gpt-oss-20b
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from .agent import SOCAgent
 from .config import VerifierConfig
 from .evaluate import make_configs
 from .io import load_events_jsonl, scenario_from_store
-from .llm import OllamaClient, SimulatedLLM
+from .llm import GroqClient
 
 
 def load_logs_json(path: str) -> dict[str, str]:
@@ -36,8 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--config", default="D_full",
         choices=["A_raw", "B_hardened", "C_graph_binary", "E_abstain_only", "D_full"],
     )
-    common.add_argument("--llm", choices=["sim", "ollama"], default="ollama")
-    common.add_argument("--model", default="llama3.1:8b")
+    common.add_argument("--llm", choices=["groq"], default="groq")
+    common.add_argument("--model", default="openai/gpt-oss-20b")
     common.add_argument("--host", default="http://localhost:11434")
     common.add_argument("--tau", type=float, default=0.7)
 
@@ -63,7 +64,7 @@ def main(argv=None) -> None:
     if not entities:
         ap.error("cannot infer alert entities from an empty event file; pass --entity")
     scn = scenario_from_store(store, tuple(entities), logs=logs)
-    llm = OllamaClient(args.model, args.host) if args.llm == "ollama" else SimulatedLLM()
+    llm = GroqClient(args.model)
     agent = SOCAgent(llm, make_configs(VerifierConfig(tau=args.tau))[args.config])
     res = agent.run(scn)
     d = res.decision
