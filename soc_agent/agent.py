@@ -1,4 +1,3 @@
-
 """The SOC agent: select -> analyst LLM -> verify -> risk gate -> route (LangGraph).
 
 Every stage is a plain method, so the same logic runs under LangGraph or, if langgraph is
@@ -12,7 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 from .config import VerifierConfig
-from .models import CONTAINMENT, SEV_RANK, Decision, GateResult
+from .llm import LLMProviderError, LLMUnavailableError
+from .models import CONTAINMENT, SEV_RANK, Decision, GateResult, Outcome
 from .patterns import REL_RISK
 from .prompts import build_prompt, parse_output
 from .risk_gate import risk_gate
@@ -55,6 +55,7 @@ class State(TypedDict, total=False):
     llm_ms: float
     verify_ms: float
     usage: dict
+    llm_error: str
 
 
 @dataclass
@@ -121,7 +122,23 @@ class SOCAgent:
         )
 
         t0 = time.perf_counter()
-        raw = self.llm.generate(system, user, scn.case_id)
+        try:
+            raw = self.llm.generate(system, user, scn.case_id)
+        except (LLMUnavailableError, LLMProviderError) as exc:
+            # Provider failures must never be interpreted as a benign analysis.
+            # Catch only known provider errors; programming errors still surface.
+            ms = (time.perf_counter() - t0) * 1000
+            provider = getattr(exc, "provider", "llm")
+            return {
+                "system": system,
+                "user": user,
+                "raw": "",
+                "parsed": None,
+                "llm_ms": ms,
+                "usage": {},
+                "llm_error": f"{provider}: {exc}",
+            }
+
         ms = (time.perf_counter() - t0) * 1000
         usage = dict(getattr(self.llm, "last_usage", {}) or {})
         ms = usage.get("wall_ms", ms)
@@ -133,6 +150,7 @@ class SOCAgent:
             "parsed": parse_output(raw),
             "llm_ms": ms,
             "usage": usage,
+            "llm_error": "",
         }
 
     def n_verify(self, s: State) -> dict:
@@ -148,11 +166,11 @@ class SOCAgent:
         )
 
         verifs = []
-        for c in parsed.claims:
-            c.high_impact = high
+        for claim in parsed.claims:
+            claim.high_impact = high
             verifs.append(
                 verify_claim(
-                    c, scn.store, scn.now, self.cfg.verifier
+                    claim, scn.store, scn.now, self.cfg.verifier
                 )
             )
 
@@ -168,7 +186,7 @@ class SOCAgent:
         t0 = time.perf_counter()
         scn = s["scn"]
 
-        g = risk_gate(
+        gate = risk_gate(
             s["parsed"],
             s["verifs"],
             scn.store,
@@ -178,13 +196,22 @@ class SOCAgent:
         )
 
         return {
-            "gate": g,
+            "gate": gate,
             "verify_ms": s.get("verify_ms", 0.0)
             + (time.perf_counter() - t0) * 1000,
         }
 
     def n_route(self, s: State) -> dict:
-        d = route(
+        if s.get("llm_error"):
+            return {
+                "decision": Decision(
+                    Outcome.ESCALATE,
+                    None,
+                    ["llm_unavailable"],
+                )
+            }
+
+        decision = route(
             s.get("parsed"),
             s.get("verifs", []),
             s.get("gate", GateResult()),
@@ -192,56 +219,58 @@ class SOCAgent:
             self.cfg.verifier.three_state,
             use_gate=self.cfg.use_gate,
         )
-        return {"decision": d}
+        return {"decision": decision}
 
     # ------------------------------------------------------------ wiring
     def _build_graph(self):
-        g = StateGraph(State)
-        g.add_node("select", self.n_select)
-        g.add_node("analyst", self.n_analyst)
-        g.add_node("verify", self.n_verify)
-        g.add_node("gate", self.n_gate)
-        g.add_node("route", self.n_route)
+        graph = StateGraph(State)
+        graph.add_node("select", self.n_select)
+        graph.add_node("analyst", self.n_analyst)
+        graph.add_node("verify", self.n_verify)
+        graph.add_node("gate", self.n_gate)
+        graph.add_node("route", self.n_route)
 
-        g.set_entry_point("select")
-        g.add_edge("select", "analyst")
-        g.add_conditional_edges(
+        graph.set_entry_point("select")
+        graph.add_edge("select", "analyst")
+        graph.add_conditional_edges(
             "analyst",
-            lambda s: "route" if s.get("parsed") is None else "verify",
+            lambda state: (
+                "route" if state.get("parsed") is None else "verify"
+            ),
             {"route": "route", "verify": "verify"},
         )
-        g.add_edge("verify", "gate")
-        g.add_edge("gate", "route")
-        g.add_edge("route", END)
+        graph.add_edge("verify", "gate")
+        graph.add_edge("gate", "route")
+        graph.add_edge("route", END)
 
-        return g.compile()
+        return graph.compile()
 
     def run(self, scn: Scenario) -> CaseResult:
         if self.graph is not None:
-            s = self.graph.invoke({"scn": scn})
+            state = self.graph.invoke({"scn": scn})
         else:
-            s = {"scn": scn}
-            s.update(self.n_select(s))
-            s.update(self.n_analyst(s))
+            state = {"scn": scn}
+            state.update(self.n_select(state))
+            state.update(self.n_analyst(state))
 
-            if s["parsed"] is not None:
-                s.update(self.n_verify(s))
-                s.update(self.n_gate(s))
+            if state["parsed"] is not None:
+                state.update(self.n_verify(state))
+                state.update(self.n_gate(state))
 
-            s.update(self.n_route(s))
+            state.update(self.n_route(state))
 
-        gate = s.get("gate", GateResult())
-        usage = s.get("usage", {})
+        gate = state.get("gate", GateResult())
+        usage = state.get("usage", {})
 
         return CaseResult(
             scn.case_id,
             self.cfg.name,
-            s["decision"],
-            s.get("parsed") is not None,
-            s.get("llm_ms", 0.0),
-            s.get("verify_ms", 0.0),
+            state["decision"],
+            state.get("parsed") is not None,
+            state.get("llm_ms", 0.0),
+            state.get("verify_ms", 0.0),
             int(usage.get("prompt_tokens", 0)),
             int(usage.get("completion_tokens", 0)),
-            [v.verdict.value for v in s.get("verifs", [])],
+            [verif.verdict.value for verif in state.get("verifs", [])],
             list(gate.flags),
         )

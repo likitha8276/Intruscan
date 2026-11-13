@@ -16,3 +16,5 @@ one_incident_test_output.jsonl
 remaining_incidents.jsonl
 remaining_incidents_output.jsonl
 rag_soc_alerts_final.jsonl
+
+.pytest_cache/

@@ -63,7 +63,6 @@ def run_slow_brain(
     flow: dict[str, Any],
     python_executable: str,
     model: str,
-    host: str,
     config: str,
     timeout: float,
 ) -> dict[str, Any]:
@@ -96,11 +95,9 @@ def run_slow_brain(
             "--config",
             config,
             "--llm",
-            "ollama",
+            "auto",
             "--model",
             model,
-            "--host",
-            host,
         ]
         LOGGER.info("invoking Slow Brain flow_id=%s", flow_id)
         try:
@@ -188,7 +185,6 @@ def process_file(
     output_path: Path,
     python_executable: str,
     model: str,
-    host: str,
     config: str,
     timeout: float,
 ) -> tuple[int, int, int]:
@@ -223,7 +219,7 @@ def process_file(
 
             try:
                 result = run_slow_brain(
-                    flow, python_executable, model, host, config, timeout
+                    flow, python_executable, model, config, timeout
                 )
             except (TypeError, ValueError, OSError) as exc:
                 LOGGER.exception(
@@ -262,8 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input", type=Path, default=Path("scored_flows.jsonl"))
     parser.add_argument("--output", type=Path, default=Path("final_soc_alerts.jsonl"))
     parser.add_argument("--python", default=sys.executable)
-    parser.add_argument("--model", default="llama3.1:8b")
-    parser.add_argument("--host", default="http://localhost:11434")
+    parser.add_argument("--model", default="openai/gpt-oss-20b")
     parser.add_argument("--config", default="D_full")
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--verbose", action="store_true")
@@ -281,7 +276,6 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             args.python,
             args.model,
-            args.host,
             args.config,
             args.timeout,
         )
