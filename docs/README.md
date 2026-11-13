@@ -94,7 +94,9 @@ Use [calibrate_thresholds.py](../tools/calibrate_thresholds.py) on the scored,
 
 labeled JSONL to inspect percentile-based cutoff suggestions and the score
 
-histogram; validate any chosen cutoffs on held-out traffic.
+histogram; validate any chosen cutoffs on held-out traffic. For a model-bound
+workflow (candidate thresholds, independent test evaluation, explicit approval)
+see the "Routing thresholds" section of [ingestion/README.md](../ingestion/README.md).
 
 Then [slow_brain_handoff.py](../tools/slow_brain_handoff.py) forwards only
 

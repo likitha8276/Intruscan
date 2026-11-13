@@ -59,6 +59,7 @@ adding s_score and route. The SQLite ingester uses the separate richer
 schema documented above; this direct JSONL mode avoids requiring extra flow
 columns that are not in the compact UGR'16 conversion schema.
 
+Exploratory percentile view (not tied to a model)
 After scoring labeled UGR'16 data, estimate score-distribution cutoffs with:
 python tools/calibrate_thresholds.py \
   --input scored_flows.jsonl --benign-label background
@@ -67,7 +68,73 @@ writes calibration_histogram.png. The suggested lower cutoff is the benign
 95th percentile and the upper cutoff is the anomalous 5th percentile. These
 are starting points for validation on held-out data, not calibrated malicious
 probabilities; if the cutoffs overlap, the script warns that the distributions
-do not support the suggested three-way band.
+do not support the suggested three-way band. This mode reads already-scored
+JSONL, so it cannot tell which model produced the scores; it never writes a
+candidate or approved threshold file.
+
+Routing thresholds: calibrate, evaluate, approve
+Routing is: score < lower is CLEAR; lower <= score <= upper is SLOW_BRAIN;
+score > upper is FAST_TRACK. Without an approved configuration, Fast Brain uses
+the original 0.40 and 0.85. The lower threshold controls escalation (CLEAR vs
+SLOW_BRAIN or FAST_TRACK); the upper threshold controls FAST_TRACK. Escalation
+recall (attacks routed to SLOW_BRAIN or FAST_TRACK) and FAST_TRACK recall
+(attacks routed to FAST_TRACK) are different metrics and are reported
+separately. Keep three labeled files disjoint: training, calibration, and test.
+1. Train (existing command, benign traffic only):
+   python -m soc_agent.fast_brain_cli train --input train.jsonl \
+     --normal-label benign --model fast_brain.joblib
+2. Calibrate. This loads the saved model, scores the labeled calibration file
+   with it (the model is never refit), and writes a CANDIDATE, not an active
+   configuration. --benign-label is required:
+   python tools/calibrate_thresholds.py calibrate \
+     --model fast_brain.joblib --input calibration.jsonl \
+     --benign-label benign --candidate-output threshold_candidate.json
+   The default method is the percentile baseline above. Optional constraints,
+   all evaluated on calibration data only: --max-benign-escalation-rate and
+   --min-escalation-recall (lower threshold), --min-fast-track-recall and
+   --max-benign-fast-track-rate (upper threshold), or an explicit operating
+   point with --lower and --upper. If the benign and attack distributions
+   overlap so that no valid pair (lower < upper) exists, or a constraint cannot
+   be met, the command exits with code 2 and writes no candidate. Sample counts
+   are checked (--min-benign 100 and --min-attack 20 by default). Input errors
+   are reported with line numbers. Existing candidate files are not overwritten
+   unless --overwrite-candidate is given.
+3. Evaluate the candidate on independent test data. Passing the calibration
+   file lets the script reject identical files and any flow_id present in both:
+   python tools/calibrate_thresholds.py evaluate \
+     --candidate threshold_candidate.json --model fast_brain.joblib \
+     --calibration-input calibration.jsonl --input test.jsonl
+   This records TP/FP/TN/FN, precision, escalation recall, specificity, F1,
+   false-positive rate, FAST_TRACK recall/precision, and the CLEAR/SLOW_BRAIN/
+   FAST_TRACK distribution in the candidate. The binary rule is CLEAR =
+   predicted benign and SLOW_BRAIN or FAST_TRACK = escalated; escalation is not
+   a confirmed attack. Evaluation never changes the thresholds. Do not tune
+   thresholds against the test set; evaluation_runs counts repeated looks.
+4. Inspect threshold_candidate.json (status "candidate"), then approve
+   explicitly:
+   python tools/calibrate_thresholds.py approve \
+     --candidate threshold_candidate.json --model fast_brain.joblib \
+     --approved-by "<name>" --output soc_agent/thresholds.json
+   Approval requires a recorded evaluation of the same thresholds and a model
+   fingerprint match. If the calibration score ranges overlap, add
+   --acknowledge-overlap. An existing approved file is replaced only with
+   --replace. Do not commit an active soc_agent/thresholds.json you have not
+   reviewed; none is shipped.
+5. Score. soc_agent/thresholds.json (or --thresholds PATH) is loaded:
+   python -m soc_agent.fast_brain_cli score --input flows.jsonl \
+     --model fast_brain.joblib --output scored_flows.jsonl
+   stderr shows the thresholds in force and whether they came from the
+   approved file or the built-in fallback, plus a routing summary. Output
+   records keep their existing fields. If no approved file exists, the 0.40 and
+   0.85 fallback is used and reported. If a file exists but is invalid, is
+   still a candidate, has an unsupported schema_version, or was approved for a
+   different model, scoring stops with an error instead of falling back.
+Model identity is the SHA-256 of the exact .joblib file. Retraining or re-saving
+produces a new fingerprint, so thresholds must be recalibrated, evaluated, and
+approved again. Only load .joblib files you trust: loading one runs pickle code.
+Percentile and constraint-based thresholds are starting points, not guaranteed
+optimal operating points; calibration-set metrics are in-sample. Thresholds are
+not recalibrated automatically from incoming traffic.
 Slow Brain handoff
 The handoff streams scored JSONL and sends only SLOW_BRAIN records to the
 Layer 4 SOC CLI. The complete original flow is preserved as the event payload

@@ -7,6 +7,7 @@ import json
 import random
 import sqlite3
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import TextIO
 
@@ -14,6 +15,7 @@ import joblib
 import numpy as np
 
 from .fast_brain import EarlyExitMVIForest, features_from_flow
+from .thresholds import resolve_routing_thresholds
 
 
 def train_archive(archive_path: str, model_path: str, random_state: int) -> int:
@@ -94,11 +96,20 @@ def score_archive(
     archive_path: str,
     model_path: str,
     output: TextIO,
+    thresholds_path: str | None = None,
+    route_counts: Counter | None = None,
 ) -> int:
-    """Score each archived flow and emit one JSONL result per flow."""
+    """Score each archived flow and emit one JSONL result per flow.
+
+    Routing uses the approved thresholds bound to this exact model file, or the
+    built-in 0.40 / 0.85 fallback when no approved configuration exists. The chosen
+    source is reported on stderr. ``route_counts``, if given, is filled per route.
+    """
     forest = joblib.load(model_path)
     if not isinstance(forest, EarlyExitMVIForest):
         raise ValueError("model file does not contain an EarlyExitMVIForest")
+    thresholds = resolve_routing_thresholds(thresholds_path, model_path)
+    print(thresholds.describe(), file=sys.stderr)
     count = 0
     with sqlite3.connect(archive_path) as connection:
         rows = connection.execute(
@@ -109,18 +120,33 @@ def score_archive(
             score = forest.compute_s_score(features_from_flow(flow))
             result = dict(flow)
             result["s_score"] = score
-            result["route"] = forest.route_flow(score)
+            result["route"] = forest.route_flow(
+                score, thresholds.lower, thresholds.upper
+            )
+            if route_counts is not None:
+                route_counts[result["route"]] += 1
             output.write(json.dumps(result, separators=(",", ":"), allow_nan=False))
             output.write("\n")
             count += 1
     return count
 
 
-def score_jsonl(input_path: str, model_path: str, output: TextIO) -> int:
-    """Score canonical JSONL records without loading the input into memory."""
+def score_jsonl(
+    input_path: str,
+    model_path: str,
+    output: TextIO,
+    thresholds_path: str | None = None,
+    route_counts: Counter | None = None,
+) -> int:
+    """Score canonical JSONL records without loading the input into memory.
+
+    Threshold handling is identical to ``score_archive``.
+    """
     forest = joblib.load(model_path)
     if not isinstance(forest, EarlyExitMVIForest):
         raise ValueError("model file does not contain an EarlyExitMVIForest")
+    thresholds = resolve_routing_thresholds(thresholds_path, model_path)
+    print(thresholds.describe(), file=sys.stderr)
     count = 0
     with open(input_path, encoding="utf-8") as source:
         for line_number, line in enumerate(source, start=1):
@@ -137,7 +163,11 @@ def score_jsonl(input_path: str, model_path: str, output: TextIO) -> int:
                 ) from exc
             result = dict(flow)
             result["s_score"] = score
-            result["route"] = forest.route_flow(score)
+            result["route"] = forest.route_flow(
+                score, thresholds.lower, thresholds.upper
+            )
+            if route_counts is not None:
+                route_counts[result["route"]] += 1
             output.write(json.dumps(result, separators=(",", ":"), allow_nan=False))
             output.write("\n")
             count += 1
@@ -172,6 +202,14 @@ def main(argv: list[str] | None = None) -> int:
     score_source.add_argument("--input", help="canonical flow JSONL")
     score_parser.add_argument("--model", default="fast_brain.joblib")
     score_parser.add_argument("--output", help="JSONL output path (default: stdout)")
+    score_parser.add_argument(
+        "--thresholds",
+        help=(
+            "approved threshold configuration bound to --model "
+            "(default: soc_agent/thresholds.json; if that file is absent the "
+            "built-in 0.40/0.85 fallback is used and reported on stderr)"
+        ),
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -194,21 +232,38 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.archive is None and args.input is None:
             parser.error("score requires --archive or --input")
+        route_counts: Counter = Counter()
         if args.output:
             output_path = Path(args.output)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with output_path.open("w", encoding="utf-8") as output:
                 if args.input:
-                    count = score_jsonl(args.input, args.model, output)
+                    count = score_jsonl(
+                        args.input, args.model, output, args.thresholds, route_counts
+                    )
                 else:
-                    count = score_archive(args.archive, args.model, output)
+                    count = score_archive(
+                        args.archive, args.model, output, args.thresholds, route_counts
+                    )
             print(f"scored {count} flows; wrote results to {args.output}")
         else:
             if args.input:
-                count = score_jsonl(args.input, args.model, sys.stdout)
+                count = score_jsonl(
+                    args.input, args.model, sys.stdout, args.thresholds, route_counts
+                )
             else:
-                count = score_archive(args.archive, args.model, sys.stdout)
+                count = score_archive(
+                    args.archive, args.model, sys.stdout, args.thresholds, route_counts
+                )
             print(f"scored {count} flows", file=sys.stderr)
+        print(
+            "routing summary: "
+            + " ".join(
+                f"{route}={route_counts.get(route, 0)}"
+                for route in ("CLEAR", "SLOW_BRAIN", "FAST_TRACK")
+            ),
+            file=sys.stderr,
+        )
         return 0
     except (OSError, sqlite3.Error, ValueError, json.JSONDecodeError) as exc:
         print(f"fast-brain error: {exc}", file=sys.stderr)

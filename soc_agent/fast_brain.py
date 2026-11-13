@@ -9,6 +9,12 @@ from typing import Self
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
+from .thresholds import (
+    DEFAULT_LOWER_THRESHOLD,
+    DEFAULT_UPPER_THRESHOLD,
+    validate_thresholds,
+)
+
 
 _TREE_COUNT = 51
 _MAJORITY = 26
@@ -151,13 +157,23 @@ class EarlyExitMVIForest:
         return float(math.exp(-math.log(2.0) * mean_path_length / normalizer))
 
     @staticmethod
-    def route_flow(s_score: float) -> str:
-        """Map a normalized anomaly score to its response path."""
+    def route_flow(
+        s_score: float,
+        lower: float = DEFAULT_LOWER_THRESHOLD,
+        upper: float = DEFAULT_UPPER_THRESHOLD,
+    ) -> str:
+        """Map a normalized anomaly score to its response path.
+
+        ``score < lower`` is CLEAR, ``lower <= score <= upper`` is SLOW_BRAIN and
+        ``score > upper`` is FAST_TRACK. The defaults are the original 0.40 / 0.85;
+        pass approved thresholds (see ``soc_agent.thresholds``) to override them.
+        """
         score = float(s_score)
         if not math.isfinite(score) or not 0.0 <= score <= 1.0:
             raise ValueError("s_score must be a finite value between 0 and 1")
-        if score < 0.40:
+        lower, upper = validate_thresholds(lower, upper)
+        if score < lower:
             return "CLEAR"
-        if score <= 0.85:
+        if score <= upper:
             return "SLOW_BRAIN"
         return "FAST_TRACK"
