@@ -1,7 +1,7 @@
 
 import json
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import urllib.error
+from unittest.mock import patch
 
 import pytest
 
@@ -18,7 +18,14 @@ from soc_agent.evaluate import (
     split_dataset,
     wilson,
 )
-from soc_agent.llm import CachedLLM, OllamaClient, SimulatedLLM
+from soc_agent.llm import (
+    CachedLLM,
+    FallbackLLM,
+    GeminiClient,
+    LLMProviderError,
+    LLMUnavailableError,
+    SimulatedLLM,
+)
 from soc_agent.models import Outcome
 from soc_agent.prompts import parse_output
 from soc_agent.router import aggregate
@@ -453,61 +460,181 @@ def test_full_system_beats_baselines_on_attacked_cases_in_sim():
 
 
 # ---------------------------------------------------------------------
-# Ollama client against a fake server
+# Gemini client against a mocked REST response
 
 
-class _Fake(BaseHTTPRequestHandler):
-    seen = {}
+class _FakeResponse:
+    def __init__(self, payload):
+        self.payload = json.dumps(payload).encode("utf-8")
 
-    def do_POST(self):
-        body = json.loads(
-            self.rfile.read(int(self.headers["Content-Length"]))
-        )
-        _Fake.seen = body
+    def __enter__(self):
+        return self
 
-        out = json.dumps(
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        return self.payload
+
+
+def test_gemini_client_request_shape_and_usage():
+    response_payload = {
+        "candidates": [
             {
-                "message": {
-                    "content": (
-                        '{"claims":[],"severity":"low",'
-                        '"action":{"type":"close","target":""}}'
-                    )
-                },
-                "prompt_eval_count": 123,
-                "eval_count": 17,
+                "content": {
+                    "parts": [
+                        {
+                            "text": (
+                                '{"claims":[],"severity":"low",'
+                                '"action":{"type":"close","target":""}}'
+                            )
+                        }
+                    ]
+                }
             }
-        ).encode()
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 123,
+            "candidatesTokenCount": 17,
+        },
+    }
+    captured = {}
 
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(out)))
-        self.end_headers()
-        self.wfile.write(out)
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return _FakeResponse(response_payload)
 
-    def log_message(self, *args):
-        pass
+    client = GeminiClient(
+        model="gemini-test-flash",
+        api_key="test-key",
+        timeout=9,
+        max_attempts=1,
+    )
+
+    with patch("soc_agent.llm.urllib.request.urlopen", side_effect=fake_urlopen):
+        output = client.generate("system prompt", "user prompt")
+
+    assert parse_output(output) is not None
+    assert captured["url"].endswith(
+        "/models/gemini-test-flash:generateContent"
+    )
+    assert captured["headers"]["X-goog-api-key"] == "test-key"
+    assert captured["body"]["systemInstruction"]["parts"][0]["text"] == "system prompt"
+    assert captured["body"]["contents"][0]["parts"][0]["text"] == "user prompt"
+    assert captured["body"]["generationConfig"]["temperature"] == 0
+    assert captured["body"]["generationConfig"]["responseMimeType"] == "application/json"
+    assert captured["timeout"] == 9
+    assert client.last_usage["prompt_tokens"] == 123
+    assert client.last_usage["completion_tokens"] == 17
 
 
-def test_ollama_client_request_shape_and_usage():
-    srv = HTTPServer(("127.0.0.1", 0), _Fake)
-    th = threading.Thread(target=srv.serve_forever, daemon=True)
-    th.start()
+def test_gemini_retries_transient_http_error():
+    payload = {
+        "candidates": [
+            {"content": {"parts": [{"text": '{"claims":[]}'}]}}
+        ]
+    }
+    calls = {"count": 0}
 
-    try:
-        c = OllamaClient(
-            "llama3.1:8b",
-            f"http://127.0.0.1:{srv.server_port}",
+    def flaky_urlopen(request, timeout):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise urllib.error.HTTPError(
+                request.full_url, 503, "temporarily unavailable", {}, None
+            )
+        return _FakeResponse(payload)
+
+    client = GeminiClient(
+        model="gemini-test-flash",
+        api_key="test-key",
+        max_attempts=2,
+    )
+
+
+    with (
+        patch("soc_agent.llm.urllib.request.urlopen", side_effect=flaky_urlopen),
+        patch("soc_agent.llm.time.sleep"),
+    ):
+        assert client.generate("sys", "user") == '{"claims":[]}'
+
+    assert calls["count"] == 2
+
+
+def test_gemini_does_not_retry_non_transient_http_error():
+    def rejected_urlopen(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 403, "permission denied", {}, None
         )
-        out = c.generate("sys", "user")
 
-        assert parse_output(out) is not None
-        assert _Fake.seen["model"] == "llama3.1:8b"
-        assert _Fake.seen["format"] == "json"
-        assert _Fake.seen["options"]["temperature"] == 0
-        assert c.last_usage["prompt_tokens"] == 123
-        assert c.last_usage["completion_tokens"] == 17
-    finally:
-        srv.shutdown()
+    client = GeminiClient(
+        model="gemini-test-flash",
+        api_key="test-key",
+        max_attempts=3,
+    )
+
+    with patch(
+        "soc_agent.llm.urllib.request.urlopen",
+        side_effect=rejected_urlopen,
+    ) as mocked:
+        with pytest.raises(LLMProviderError) as error:
+            client.generate("sys", "user")
+
+    assert error.value.provider == "gemini"
+    assert error.value.transient is False
+    assert error.value.status_code == 403
+    assert mocked.call_count == 1
+
+
+def test_fallback_llm_uses_gemini_only_after_transient_primary_error():
+    class FailingPrimary:
+        last_usage = {}
+
+        def generate(self, *args):
+            raise LLMProviderError("Groq overloaded", "groq", True, 503)
+
+    fallback = Scripted('{"claims":[]}')
+
+    llm = FallbackLLM(FailingPrimary(), fallback)
+    assert llm.generate("sys", "user") == '{"claims":[]}'
+    assert llm.last_provider == "gemini"
+
+
+def test_fallback_llm_does_not_fallback_after_auth_error():
+    class RejectedPrimary:
+        last_usage = {}
+
+        def generate(self, *args):
+            raise LLMProviderError("bad API key", "groq", False, 401)
+
+    fallback = Scripted('{"claims":[]}')
+
+    llm = FallbackLLM(RejectedPrimary(), fallback)
+    with pytest.raises(LLMProviderError):
+        llm.generate("sys", "user")
+
+
+def test_fallback_llm_reports_when_both_providers_fail():
+    class FailingProvider:
+        last_usage = {}
+
+        def __init__(self, provider):
+            self.provider = provider
+
+        def generate(self, *args):
+            raise LLMProviderError(
+                f"{self.provider} unavailable", self.provider, True, 503
+            )
+
+    llm = FallbackLLM(
+        FailingProvider("groq"),
+        FailingProvider("gemini"),
+    )
+
+    with pytest.raises(LLMUnavailableError):
+        llm.generate("sys", "user")
 
 
 def test_cached_llm_counts_hits():

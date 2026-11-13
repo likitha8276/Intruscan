@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+from soc_agent import cli
 from tools.slow_brain_handoff import map_flow_to_event, process_file
 
 
@@ -55,7 +56,7 @@ def test_process_file_filters_routes_persists_timeout_and_cleans_tempfiles(tmp_p
         nonlocal calls
         calls += 1
         assert kwargs["timeout"] == 2.0
-        assert command[command.index("--llm") + 1] == "ollama"
+        assert command[command.index("--llm") + 1] == "auto"
         event_path = Path(command[command.index("--input") + 1])
         logs_path = Path(command[command.index("--logs") + 1])
         temp_paths.extend((event_path, logs_path))
@@ -85,8 +86,7 @@ def test_process_file_filters_routes_persists_timeout_and_cleans_tempfiles(tmp_p
             source,
             destination,
             "python",
-            "llama3.1:8b",
-            "http://localhost:11434",
+            "openai/gpt-oss-20b",
             "D_full",
             2.0,
         )
@@ -113,12 +113,17 @@ def test_process_file_logs_invalid_flow_and_continues(tmp_path):
         encoding="utf-8",
     )
     completed = subprocess.CompletedProcess(
-        ["python"], 0, stdout='{"outcome":"ESCALATE","verdicts":[],"reasons":[],"gate_flags":[]}', stderr=""
+        ["python"],
+        0,
+        stdout='{"outcome":"ESCALATE","verdicts":[],"reasons":[],"gate_flags":[]}',
+        stderr="",
     )
-    with patch("tools.slow_brain_handoff.subprocess.run", return_value=completed) as run:
+    with patch(
+        "tools.slow_brain_handoff.subprocess.run",
+        return_value=completed,
+    ) as run:
         processed, ignored, invalid_count = process_file(
-            source, destination, "python", "llama3.1:8b",
-            "http://localhost:11434", "D_full", 2.0,
+            source, destination, "python", "openai/gpt-oss-20b", "D_full", 2.0,
         )
     results = [json.loads(line) for line in destination.read_text().splitlines()]
     assert (processed, ignored, invalid_count) == (2, 0, 1)
@@ -127,7 +132,9 @@ def test_process_file_logs_invalid_flow_and_continues(tmp_path):
     assert run.call_count == 1
 
 
-def test_cli_accepts_requested_input_shorthand(tmp_path):
+def test_cli_accepts_requested_input_shorthand_and_auto_fallback(
+    tmp_path, monkeypatch, capsys
+):
     event_path = tmp_path / "event.jsonl"
     logs_path = tmp_path / "logs.json"
     event = map_flow_to_event(_flow("simulated", "SLOW_BRAIN"))
@@ -136,27 +143,94 @@ def test_cli_accepts_requested_input_shorthand(tmp_path):
         json.dumps({"simulated": json.dumps(_flow("simulated", "SLOW_BRAIN"))}),
         encoding="utf-8",
     )
-    result = subprocess.run(
-        [
-            "python",
-            "-m",
-            "soc_agent.cli",
-            "--input",
-            str(event_path),
-            "--logs",
-            str(logs_path),
-            "--entity",
-            event["src"],
-            "--entity",
-            event["dst"],
-            "--llm",
-            "sim",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    decoded = json.loads(result.stdout)
-    assert "verdicts" in decoded
-    assert "gate_flags" in decoded
-    assert "reasons" in decoded
+    argv = [
+        "--input", str(event_path),
+        "--logs", str(logs_path),
+        "--entity", event["src"],
+        "--entity", event["dst"],
+        "--llm", "auto",
+    ]
+
+    # Dummy credentials satisfy auto-mode configuration. Both clients are
+    # replaced below, so this test never contacts either provider.
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+
+    def forbid_network(*args, **kwargs):
+        raise AssertionError("test must not make a real provider/network request")
+
+    monkeypatch.setattr("urllib.request.urlopen", forbid_network)
+
+    created = []
+
+    class FakeGroqClient:
+        def __init__(self, model, *args, **kwargs):
+            self.model = model
+            self.calls = []
+            self.last_usage = {}
+            created.append(("groq", self))
+
+        def generate(self, system, user, seed_key=""):
+            self.calls.append(
+                {"system": system, "user": user, "seed_key": seed_key}
+            )
+            return json.dumps(
+                {
+                    "severity": "low",
+                    "action": {"type": "investigate", "target": ""},
+                    "claims": [
+                        {
+                            "id": "c1",
+                            "text": "flow observed between the alert entities",
+                            "chain": [
+                                {
+                                    "rel": event["rel"],
+                                    "src": event["src"],
+                                    "dst": event["dst"],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+
+    class FakeGeminiClient:
+        def __init__(self, *args, **kwargs):
+            self.calls = []
+            self.last_usage = {}
+            created.append(("gemini", self))
+
+        def generate(self, system, user, seed_key=""):
+            self.calls.append(
+                {"system": system, "user": user, "seed_key": seed_key}
+            )
+            raise AssertionError("Gemini should not run when Groq succeeds")
+
+    monkeypatch.setattr(cli, "GroqClient", FakeGroqClient)
+    monkeypatch.setattr(cli, "GeminiClient", FakeGeminiClient)
+
+    parsed = cli.build_parser().parse_args(argv)
+    assert parsed.events == str(event_path)
+    assert parsed.logs == str(logs_path)
+    assert parsed.entity == [event["src"], event["dst"]]
+    assert parsed.llm == "auto"
+
+    # Run the real CLI: loaders, scenario, SOCAgent, verifier, gate, router, JSON output.
+    cli.main(argv)
+
+    assert [provider for provider, _ in created] == ["groq", "gemini"]
+    groq_client = created[0][1]
+    gemini_client = created[1][1]
+    assert groq_client.model == "openai/gpt-oss-20b"
+    assert len(groq_client.calls) == 1
+    assert gemini_client.calls == []
+    prompt = groq_client.calls[0]["user"]
+    assert event["src"] in prompt and event["dst"] in prompt
+    assert '"flow_id": "simulated"' in prompt
+
+    decoded = json.loads(capsys.readouterr().out)
+    assert isinstance(decoded["verdicts"], list)
+    assert isinstance(decoded["gate_flags"], list)
+    assert isinstance(decoded["reasons"], list) and decoded["reasons"]
+    assert decoded["verdicts"] == ["SUPPORTED"]
+    assert decoded["outcome"] == "ESCALATE"

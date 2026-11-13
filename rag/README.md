@@ -6,7 +6,8 @@ Reads the scored flows from Layer 2 and hands context-enriched incidents to the 
 
     python -m rag.bridge  --scored scored_flows.jsonl --baseline-file NORMAL_FLOWS.jsonl --baseline-label NORMAL_LABEL
     python -m rag.handoff --scored scored_flows.jsonl --baseline-file NORMAL_FLOWS.jsonl --baseline-label NORMAL_LABEL --output rag_soc_alerts.jsonl
-    python -m rag.handoff ... --llm sim          # test the plumbing without Ollama
+    python -m rag.handoff ... --llm sim          # t
+    # test the plumbing without an API provider
     python -m rag.retrieval_check [--mitre full] [--bench]  # test the MITRE lookup; --bench scores 14 attack behaviours
 
 NORMAL_FLOWS.jsonl is the data the fast brain was trained on; NORMAL_LABEL is the same label used for

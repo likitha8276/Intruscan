@@ -57,7 +57,7 @@ The selector chooses a relevant portion of the event graph under a token budget.
 
 ### 2.2 Analyst model
 
-The model proposes incident claims, severity, and an action in a structured JSON format. The implementation supports both an Ollama client and a simulated LLM used for controlled experiments.
+The model proposes incident claims, severity, and an action in a structured JSON format. - - Run the experiment using the configured cloud LLM provider and report its results separately.
 
 The model is not granted direct execution authority. PROPOSE indicates a proposed response awaiting human approval.
 
@@ -229,7 +229,7 @@ The high clean-case burden in the later D_full experiment is a practical concern
 
 ## 8. Future Work
 
-- Run the experiment using the actual local model through Ollama and report its results separately.
+- Run the experiment using the configured cloud LLM provider and report its results separately.
 - Add an independently protected raw-log archive for cross-checking suspicious graph events.
 - Evaluate provenance verification under ingestion compromise and key-management failures.
 - Test on attack chains derived from public security datasets.
