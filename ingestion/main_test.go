@@ -38,7 +38,7 @@ func TestIngestArchivesFlowsAndConfiguresSQLite(t *testing.T) {
 		t.Fatalf("synchronous = %d, want NORMAL (1)", synchronous)
 	}
 
-	line := `{"flow_id":"flow-1","timestamp":"2026-11-03T10:00:00Z","src_ip":"10.0.0.1","dst_ip":"10.0.0.2","src_port":1234,"dst_port":443,"protocol":"TCP","packets":12,"bytes":4096,"duration_ms":100.5,"label":"benign"}`
+	line := `{"flow_id":"flow-1","timestamp":"2026-11-03T10:00:00Z","src_ip":"10.0.0.1","dst_ip":"10.0.0.2","src_port":1234,"dst_port":443,"protocol":"TCP","packets":12,"bytes":4096,"duration_ms":100.5,"label":"benign","metadata":{"source":"CICIDS2017","timestamp_quality":"incomplete"},"features":{"syn_flag_count":2,"flow_bytes_per_second":40.75}}`
 	input := strings.NewReader(line + "\n" + line + "\n")
 	count, err := ingest(ctx, db, input, 2)
 	if err != nil {

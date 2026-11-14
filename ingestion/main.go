@@ -35,18 +35,20 @@ type config struct {
 }
 
 type flowRecord struct {
-	FlowID     string          `json:"flow_id"`
-	Timestamp  string          `json:"timestamp"`
-	SrcIP      string          `json:"src_ip"`
-	DstIP      string          `json:"dst_ip"`
-	SrcPort    *uint16         `json:"src_port"`
-	DstPort    *uint16         `json:"dst_port"`
-	Protocol   string          `json:"protocol"`
-	Packets    *uint64         `json:"packets"`
-	Bytes      *uint64         `json:"bytes"`
-	DurationMS *float64        `json:"duration_ms"`
-	Label      string          `json:"label,omitempty"`
-	RawJSON    json.RawMessage `json:"-"`
+	FlowID     string                     `json:"flow_id"`
+	Timestamp  string                     `json:"timestamp"`
+	SrcIP      string                     `json:"src_ip"`
+	DstIP      string                     `json:"dst_ip"`
+	SrcPort    *uint16                    `json:"src_port"`
+	DstPort    *uint16                    `json:"dst_port"`
+	Protocol   string                     `json:"protocol"`
+	Packets    *uint64                    `json:"packets"`
+	Bytes      *uint64                    `json:"bytes"`
+	DurationMS *float64                   `json:"duration_ms"`
+	Label      string                     `json:"label,omitempty"`
+	Metadata   map[string]json.RawMessage `json:"metadata,omitempty"`
+	Features   map[string]float64         `json:"features,omitempty"`
+	RawJSON    json.RawMessage            `json:"-"`
 }
 
 type batchJob struct {
@@ -276,6 +278,14 @@ func validateRecord(record flowRecord) error {
 	}
 	if *record.DurationMS < 0 {
 		return fmt.Errorf("duration_ms must be non-negative")
+	}
+	for name, value := range record.Features {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("feature names must not be empty")
+		}
+		if value < 0 {
+			return fmt.Errorf("feature %q must be non-negative", name)
+		}
 	}
 	return nil
 }

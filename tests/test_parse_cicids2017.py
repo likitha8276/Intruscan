@@ -1,74 +1,57 @@
-import json
-
+import csv, json
 import pytest
+from tools.parse_cicids2017 import convert_csv, convert_row, parse_timestamp
 
-from tools.parse_cicids2017 import convert_csv
+HEADER=["Src IP dec","Src Port","Dst IP dec","Dst Port","Protocol","Timestamp","Flow Duration",
+"Total Fwd Packet","Total Bwd packets","Total Length of Fwd Packet","Total Length of Bwd Packet",
+"Flow Bytes/s","Flow Packets/s","Fwd Packets/s","Bwd Packets/s","Fwd Packet Length Mean",
+"Bwd Packet Length Mean","Packet Length Std","Flow IAT Mean","Flow IAT Std","SYN Flag Count",
+"RST Flag Count","ACK Flag Count","Label","Attempted Category"]
+def sample(timestamp="53:44.4"):
+    return dict(zip(HEADER,["3232238085","49159","3232238083","445","6",timestamp,"90030854",
+    "10","10","8","2","0.111073033","0.222146066","0.111073033","0.111073033","0.8","0.2",
+    "0.512989176","4738466","11232767.18","0","0","20","BENIGN","-1"]))
 
+def test_actual_cicids_row_maps_to_canonical_schema():
+    f=convert_row(sample(),"tuesday",1)
+    assert (f["src_ip"],f["dst_ip"])==("192.168.10.5","192.168.10.3")
+    assert (f["src_port"],f["dst_port"],f["protocol"])==(49159,445,"6")
+    assert (f["packets"],f["bytes"])==(20,10)
+    assert f["duration_ms"]==pytest.approx(90030.854)
+    assert len(f["features"])==20 and f["features"]["ack_flag_count"]==20
+    assert f["metadata"]["original_timestamp"]=="53:44.4"
+    assert f["metadata"]["timestamp_is_wall_clock"] is False
+    assert f["label"]=="benign"
 
-def test_converts_cicids2017_rows(tmp_path):
-    source = tmp_path / "monday.csv"
-    destination = tmp_path / "flows.jsonl"
+def test_full_timestamp():
+    ts,kind=parse_timestamp("2017-07-04 08:12:13.250")
+    assert ts=="2017-07-04T08:12:13.250000Z" and kind=="wall_clock"
 
-    source.write_text(
-        "Timestamp,Protocol,Flow Duration,Total Fwd Packet,"
-        "Total Bwd packets,Total Length of Fwd Packet,"
-        "Total Length of Bwd Packet,Label\n"
-        "2017-07-03 08:00:00,6,125000,10,5,800,1200,BENIGN\n"
-        "2017-07-03 08:00:01,17,2000000,4,6,400,600,DoS\n",
-        encoding="utf-8",
-    )
+def test_relative_timestamp_explicitly_marked():
+    ts,kind=parse_timestamp("53:44.4")
+    assert ts=="1970-01-01T00:53:44.400000Z" and kind=="relative_elapsed_surrogate"
 
-    written, skipped = convert_csv(source, destination)
+def test_invalid_optional_feature_zero_filled_and_recorded():
+    row=sample(); row["Flow Bytes/s"]="Infinity"
+    f=convert_row(row,"tuesday",1)
+    assert f["features"]["flow_bytes_per_second"]==0
+    assert "flow_bytes_per_second" in f["metadata"]["zero_filled_missing_or_invalid_features"]
 
-    records = [
-        json.loads(line)
-        for line in destination.read_text(encoding="utf-8").splitlines()
-    ]
+def test_jsonl_conversion(tmp_path):
+    src=tmp_path/"tuesday.csv"; dst=tmp_path/"flows.jsonl"
+    with src.open("w",newline="",encoding="utf-8") as h:
+        w=csv.DictWriter(h,fieldnames=HEADER); w.writeheader(); w.writerow(sample())
+    assert convert_csv(src,dst)==(1,0)
+    obj=json.loads(dst.read_text().splitlines()[0])
+    assert obj["src_ip"]=="192.168.10.5" and len(obj["features"])==20
 
-    assert (written, skipped) == (2, 0)
-    assert records[0] == {
-        "flow_id": "cicids2017:monday:1",
-        "packet_count": 15,
-        "byte_count": 2000,
-        "duration_ms": 125.0,
-        "label": "benign",
-        "timestamp": "2017-07-03 08:00:00",
-        "protocol": "6",
-    }
-    assert records[1]["label"] == "dos"
-    assert records[1]["duration_ms"] == 2000.0
-    assert records[0]["flow_id"] != records[1]["flow_id"]
+def test_invalid_required_row_skipped(tmp_path):
+    src=tmp_path/"tuesday.csv"; dst=tmp_path/"flows.jsonl"
+    row=sample(); row["Src IP dec"]="bad"
+    with src.open("w",newline="",encoding="utf-8") as h:
+        w=csv.DictWriter(h,fieldnames=HEADER); w.writeheader(); w.writerow(row)
+    assert convert_csv(src,dst)==(0,1)
 
-
-def test_skips_malformed_rows(tmp_path):
-    source = tmp_path / "monday.csv"
-    destination = tmp_path / "flows.jsonl"
-
-    source.write_text(
-        "Flow Duration,Total Fwd Packet,Total Bwd packets,"
-        "Total Length of Fwd Packet,Total Length of Bwd Packet,Label\n"
-        "1000,2,3,100,200,BENIGN\n"
-        "invalid,2,3,100,200,BENIGN\n",
-        encoding="utf-8",
-    )
-
-    written, skipped = convert_csv(source, destination)
-
-    assert (written, skipped) == (1, 1)
-
-
-def test_missing_required_header_fails(tmp_path):
-    source = tmp_path / "monday.csv"
-    destination = tmp_path / "flows.jsonl"
-    source.write_text("Flow Duration,Label\n1000,BENIGN\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="missing required columns"):
-        convert_csv(source, destination)
-
-
-def test_rejects_same_input_and_output(tmp_path):
-    source = tmp_path / "monday.csv"
-    source.write_text("Flow Duration,Label\n1000,BENIGN\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="must be different"):
-        convert_csv(source, source)
+def test_same_path_rejected(tmp_path):
+    p=tmp_path/"same.csv"; p.write_text("header\n")
+    with pytest.raises(ValueError,match="must be different"): convert_csv(p,p)
