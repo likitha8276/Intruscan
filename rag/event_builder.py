@@ -12,8 +12,7 @@ The MITRE similarity score is NOT put here: soc_agent applies a confidence thres
 and a cosine score of ~0.5 would mark every step low confidence.
 """
 from collections import defaultdict
-from datetime import datetime, timezone
-from .graph_store import is_internal
+from .graph_store import is_internal, parse_ts
 
 AUTH_PORTS = {21, 22, 23, 445, 3389}
 PORTSCAN_MIN_TARGETS = 15
@@ -40,7 +39,19 @@ def normalize(flow):
             "src": g("src_ip", "source_ip"), "dst": g("dst_ip", "dest_ip"),
             "dport": g("dst_port"), "proto": g("protocol"),
             "packets": g("packets", "packet_count"), "bytes": g("bytes", "byte_count"),
-            "s_score": flow.get("s_score")}
+            "s_score": flow.get("s_score"),
+            # "absolute" unless the converter marked the timestamp as a placeholder
+            "ts_kind": flow.get("ts_kind") or "absolute",
+            "ts_original": flow.get("ts_original")}
+
+
+def is_timed(f):
+    """True only when the flow has a real, parseable event time.
+
+    Flows with a missing or surrogate timestamp are kept in the pipeline but must not feed
+    anything that depends on actual event time (verifier freshness/order, baseline dating).
+    """
+    return f.get("ts_kind", "absolute") == "absolute" and parse_ts(f.get("ts")) is not None
 
 
 class SrcStats:
@@ -86,9 +97,12 @@ def behavior_stats(f, st):
 
 
 def build_event(f, fallback_id):
-    # keep the timestamp as the flow had it (soc_agent/io.py parses RFC3339 and space-separated);
-    # the schema needs a ts, so fall back to ingestion time and lower parse_conf
-    ts = f["ts"] or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    return {"event_id": f["flow_id"] or fallback_id, "ts": ts, "rel": "connect",
+    # keep the timestamp as the flow had it (soc_agent/io.py parses RFC3339 and space-separated).
+    # A flow without a real timestamp is never turned into an event: inventing a time (the old
+    # "ingestion time" fallback) would let the verifier treat it as fresh, ordered evidence.
+    if not is_timed(f):
+        raise ValueError(f"flow {f.get('flow_id')!r} has no real event timestamp "
+                         f"(ts_kind={f.get('ts_kind')!r}); it must not become an event")
+    return {"event_id": f["flow_id"] or fallback_id, "ts": f["ts"], "rel": "connect",
             "src": f["src"], "dst": f["dst"], "source_system": "netflow",
-            "parse_conf": 1.0 if f["ts"] else 0.85, "match_conf": 1.0}
+            "parse_conf": 1.0, "match_conf": 1.0}

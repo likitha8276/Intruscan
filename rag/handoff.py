@@ -7,6 +7,7 @@ import argparse, json, logging, subprocess, sys, tempfile
 from collections import defaultdict
 from pathlib import Path
 from .bridge import build, BASE_PREFIX
+from soc_agent import incidents as inc_mod
 
 LOG = logging.getLogger("rag.handoff")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +21,7 @@ def _err(status, reason, stdout="", stderr=""):
 def run_incident(src, events, logs, python, model, config, timeout, root, max_entities=5, llm="auto"):
     with tempfile.TemporaryDirectory(prefix="rag-incident-") as d:
         ev, lg = Path(d) / "events.jsonl", Path(d) / "logs.json"
-        ev.write_text("".join(json.dumps(e) + "\\n" for e in events), encoding="utf-8")
+        ev.write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
         lg.write_text(json.dumps({e["event_id"]: logs[e["event_id"]] for e in events}), encoding="utf-8")
         entities = [src] + sorted({e["dst"] for e in events})[: max_entities - 1]
         cmd = [python, "-m", "soc_agent.cli", "--input", str(ev), "--logs", str(lg)]
@@ -49,8 +50,26 @@ def run_incident(src, events, logs, python, model, config, timeout, root, max_en
 
 def run(scored, output, index, python=sys.executable, model="openai/gpt-oss-20b",
         config="D_full", timeout=300.0,
-        max_events=12, root=PROJECT_ROOT, baseline_path=None, baseline_label=None, llm="auto"):
-    events, logs, skipped = build(scored, index, baseline_path=baseline_path, baseline_label=baseline_label)
+        max_events=12, root=PROJECT_ROOT, baseline_path=None, baseline_label=None, llm="auto",
+        incident_store=None, run_context=None):
+    """Group SLOW_BRAIN flows per source and call the SOC CLI once per source.
+
+    With `incident_store` (a soc_agent.incidents.IncidentStore) every analysed source, every
+    untimed flow (missing/surrogate timestamp, never sent to the LLM) and the result metadata is
+    also recorded as an incident. `run_context` may carry model_sha256 / feature_set / thresholds.
+    """
+    untimed, meta = [], {}
+    events, logs, skipped = build(scored, index, baseline_path=baseline_path, baseline_label=baseline_label,
+                                  untimed_out=untimed, meta_out=meta)
+    ctx = run_context or {}
+    if incident_store is not None:
+        for raw in untimed:
+            try:
+                incident_store.save(inc_mod.untimed_incident(raw, **ctx))
+            except ValueError as exc:
+                LOG.error("cannot record untimed flow: %s", exc)
+    if untimed:
+        LOG.warning("%d SLOW_BRAIN flows have missing/surrogate timestamps; not sent to the LLM", len(untimed))
     groups = defaultdict(list)
     for e in events:
         groups[e["src"]].append(e)
@@ -63,10 +82,16 @@ def run(scored, output, index, python=sys.executable, model="openai/gpt-oss-20b"
             # ride along, and a scanner can own thousands of flows, so the incident part is capped
             sent = base + inc[:max_events]
             result = run_incident(src, sent, logs, python, model, config, timeout, root, llm=llm)
+            result = run_incident(src, sent, logs, python, model, config, timeout, root, llm=llm)
             dest.write(json.dumps({"src": src, "event_ids": [e["event_id"] for e in sent],
                                    "events_total": len(inc), "events_sent": len(sent),
-                                   "soc_result": result}, ensure_ascii=False) + "\\n")
+                                   "soc_result": result}, ensure_ascii=False) + "\n")
             dest.flush()
+            if incident_store is not None:
+                mitre = [dict(h, event_id=e["event_id"]) for e in sent for h in meta.get(e["event_id"], {}).get("mitre", [])]
+                incident_store.save(inc_mod.slow_brain_incident(
+                    src=src, events=sent, logs=logs, soc_result=result, mitre=mitre,
+                    flows=[{"s_score": meta.get(e["event_id"], {}).get("s_score")} for e in sent], **ctx), replace=True)
             LOG.info("incident src=%s events=%d/%d status=%s", src, len(sent), len(inc), result["status"])
     return len(groups), len(events), skipped
 
@@ -89,14 +114,26 @@ def main():
     ap.add_argument("--config", default="D_full")
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--max-events", type=int, default=12)
+    ap.add_argument("--incident-db", type=Path, default=None,
+                    help="also record incidents (Slow Brain, FAST_TRACK, untimed) in this SQLite store")
+    ap.add_argument("--fast-brain-model", default=None,
+                    help="trusted model .joblib; its fingerprint and feature set are stored with incidents")
+    ap.add_argument("--thresholds", default=None, help="approved thresholds file (with --fast-brain-model)")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     from . import bridge as _bridge
     _bridge.MIN_CONF, _bridge.GAP, _bridge.MAX_HITS = a.min_conf, a.gap, a.max_hits
     from .mitre_store import make_index
+    store, ctx = None, None
+    if a.incident_db:
+        store = inc_mod.IncidentStore(a.incident_db)
+        ctx = (inc_mod.run_context_from_model(a.fast_brain_model, a.thresholds) if a.fast_brain_model else {})
+        counts = inc_mod.record_scored_file(a.scored, store, ctx, include_untimed=False)
+        LOG.info("FAST_TRACK incidents recorded (no LLM): %s", counts)
     n_inc, n_ev, skipped = run(a.scored, a.output, make_index(a.mitre, a.chroma_path, a.mitre_scope), a.python,
                                a.model, a.config, a.timeout, a.max_events,
-                               baseline_path=a.baseline_file, baseline_label=a.baseline_label, llm=a.llm)
+                               baseline_path=a.baseline_file, baseline_label=a.baseline_label, llm=a.llm,
+                               incident_store=store, run_context=ctx)
     LOG.info("done incidents=%d events=%d skipped=%d", n_inc, n_ev, skipped)
 
 
