@@ -28,21 +28,38 @@ REL_PHRASE = {
     "ANOMALOUS_FLOW": "unusual network flow with abnormal packet and byte profile",
 }
 
-
 def normalize(flow):
     def g(*keys):
         for k in keys:
             if flow.get(k) not in (None, ""):
                 return flow[k]
         return None
-    return {"flow_id": g("flow_id"), "ts": g("timestamp", "ts"),
-            "src": g("src_ip", "source_ip"), "dst": g("dst_ip", "dest_ip"),
-            "dport": g("dst_port"), "proto": g("protocol"),
-            "packets": g("packets", "packet_count"), "bytes": g("bytes", "byte_count"),
-            "s_score": flow.get("s_score"),
-            # "absolute" unless the converter marked the timestamp as a placeholder
-            "ts_kind": flow.get("ts_kind") or "absolute",
-            "ts_original": flow.get("ts_original")}
+
+    metadata = flow.get("metadata") or {}
+
+    ts_kind = flow.get("ts_kind")
+    if ts_kind is None:
+        is_wall_clock = metadata.get("timestamp_is_wall_clock")
+        semantics = metadata.get("timestamp_semantics")
+
+        if is_wall_clock is False or semantics == "relative_elapsed_surrogate":
+            ts_kind = "surrogate"
+        else:
+            ts_kind = "absolute"
+
+    return {
+        "flow_id": g("flow_id"),
+        "ts": g("timestamp", "ts"),
+        "src": g("src_ip", "source_ip"),
+        "dst": g("dst_ip", "dest_ip"),
+        "dport": g("dst_port"),
+        "proto": g("protocol"),
+        "packets": g("packets", "packet_count"),
+        "bytes": g("bytes", "byte_count"),
+        "s_score": flow.get("s_score"),
+        "ts_kind": ts_kind,
+        "ts_original": flow.get("ts_original"),
+    }
 
 
 def is_timed(f):

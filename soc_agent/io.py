@@ -20,6 +20,7 @@ def event_from_dict(d: dict) -> Event:
         event_id=str(d["event_id"]), ts=_ts(d["ts"]), rel=str(d.get("rel") or d["type"]),
         src=str(d["src"]), dst=str(d["dst"]), source_system=str(d.get("source_system", "unknown")),
         parse_conf=float(d.get("parse_conf", 1.0)), match_conf=float(d.get("match_conf", 1.0)),
+        provenance_signature=d.get("provenance_signature"),
     )
 
 

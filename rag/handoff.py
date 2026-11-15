@@ -74,14 +74,13 @@ def run(scored, output, index, python=sys.executable, model="openai/gpt-oss-20b"
     for e in events:
         groups[e["src"]].append(e)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
-    with open(output, "a", encoding="utf-8") as dest:
+    with open(output, "w", encoding="utf-8") as dest:
         for src, evs in groups.items():
             base = [e for e in evs if e["event_id"].startswith(BASE_PREFIX)][:5]
             inc = [e for e in evs if not e["event_id"].startswith(BASE_PREFIX)]
             # the agent shows at most 16 log lines (soc_agent max_log_lines); baseline events always
             # ride along, and a scanner can own thousands of flows, so the incident part is capped
             sent = base + inc[:max_events]
-            result = run_incident(src, sent, logs, python, model, config, timeout, root, llm=llm)
             result = run_incident(src, sent, logs, python, model, config, timeout, root, llm=llm)
             dest.write(json.dumps({"src": src, "event_ids": [e["event_id"] for e in sent],
                                    "events_total": len(inc), "events_sent": len(sent),

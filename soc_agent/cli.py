@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import warnings
 
 from dotenv import load_dotenv
 
@@ -83,6 +84,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> None:
     load_dotenv()
 
+    provenance_secret = os.environ.get("SOC_PROVENANCE_KEY")
+    provenance_key = provenance_secret.encode("utf-8") if provenance_secret else None
+    if provenance_key is None:
+        warnings.warn(
+            "SOC_PROVENANCE_KEY is not configured; provenance verification is disabled.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
     ap = build_parser()
     args = ap.parse_args(argv)
     if args.cmd not in (None, "triage"):
@@ -104,9 +114,14 @@ def main(argv=None) -> None:
     except ValueError as exc:
         ap.error(str(exc))
 
+    verifier_config = VerifierConfig(
+        tau=args.tau,
+        require_provenance=provenance_key is not None,
+        provenance_key=provenance_key,
+    )
     agent = SOCAgent(
         llm,
-        make_configs(VerifierConfig(tau=args.tau))[args.config],
+        make_configs(verifier_config)[args.config],
     )
     res = agent.run(scn)
     decision = res.decision
