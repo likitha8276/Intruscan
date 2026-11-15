@@ -18,3 +18,13 @@ remaining_incidents_output.jsonl
 rag_soc_alerts_final.jsonl
 
 .pytest_cache/
+# Local datasets, trained models and generated outputs
+data/
+backup_threshold_calibration/
+.pytest_cache/
+.venv/
+handoff_smoke_result.jsonl
+handoff_smoke_test.jsonl
+slow_brain_batch_results.jsonl
+intruscan-source.tar.gz
+local_changes.patch

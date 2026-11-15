@@ -6,11 +6,20 @@ evidence graph can actually contain "this pair talks routinely". logs: {event_id
 The ground truth `label` is never copied into events or logs.
 """
 import argparse, json, sys
+import os
+
+from dotenv import load_dotenv
+from soc_agent.io import event_from_dict
+from soc_agent.provenance import sign_event
 from datetime import timedelta
 from .graph_store import FlowGraph, parse_ts
-from .event_builder import normalize, SrcStats, infer_behavior, describe, behavior_stats, build_event
+from .event_builder import normalize, is_timed, SrcStats, infer_behavior, describe, behavior_stats, build_event
 
 BASE_PREFIX = "BASE-"
+def _sign_event_dict(event_data, key):
+    event = event_from_dict(event_data)
+    signature = sign_event(event, key)
+    return {**event_data, "provenance_signature": signature}
 
 # Retrieval filtering. Starting values from python -m rag.retrieval_check output, not calibrated constants.
 # Cosine confidence does NOT separate right from wrong matches on the full ATT&CK matrix (a wrong match
@@ -77,13 +86,27 @@ def _rows(path):
                     yield None
 
 
-def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=None, baseline_label=None):
+def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=None, baseline_label=None,
+          untimed_out=None, meta_out=None):
     """Returns (events, logs {event_id: text}, skipped).
+
+    Surrogate / missing timestamps: a SLOW_BRAIN flow whose timestamp is not real event time is NOT
+    turned into an event, not added to the anomaly graph and not sent to VectorRAG, because the
+    verifier and the baseline dating depend on actual time. Such raw rows are appended to
+    `untimed_out` (if given) so the caller can record them for an analyst. Untimed baseline flows
+    still count toward "this pair talks routinely" but contribute no dates. `meta_out` (if given)
+    receives {event_id: {"behavior", "mitre", "context"}} so callers can keep the structured
+    ATT&CK candidates instead of re-parsing log text.
 
     Baseline source: by default the CLEAR flows in the scored file. That breaks for recurring jobs the
     fast brain finds unusual (a nightly backup never gets cleared, so it never becomes baseline). Pass
     baseline_path (the normal data the fast brain was trained on) and baseline_label (the same
     --normal-label used for training) to build the baseline from that instead."""
+    # Load the same shared secret used by the SOC CLI. If it is absent, events remain unsigned.
+    load_dotenv()
+    secret = os.environ.get("SOC_PROVENANCE_KEY")
+    provenance_key = secret.encode("utf-8") if secret else None
+
     graph, stats, slow, skipped, first_inc = FlowGraph(), SrcStats(), [], 0, {}
     for raw in _rows(scored_path):                       # pass 1: incident flows
         if raw is None:
@@ -93,7 +116,11 @@ def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=
         if not f["src"] or not f["dst"]:
             skipped += 1
             continue
-        if raw.get("route") == "SLOW_BRAIN":             # FAST_TRACK bypasses this layer by design
+        if raw.get("route") == "SLOW_BRAIN":             # FAST_TRACK is recorded by soc_agent.incidents
+            if not is_timed(f):
+                if untimed_out is not None:
+                    untimed_out.append(raw)
+                continue
             slow.append((raw, f))
             stats.add(f)
             dt, pair = parse_ts(f["ts"]), (f["src"], f["dst"])
@@ -112,7 +139,7 @@ def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=
         f = normalize(raw)
         pair = (f["src"], f["dst"])
         if pair in pairs:
-            graph.add_baseline(*pair, ts=f["ts"], before=first_inc.get(pair))
+            graph.add_baseline(*pair, ts=f["ts"] if is_timed(f) else None, before=first_inc.get(pair))
 
     prepared = []
     for raw, f in slow:                                  # anomalies join the graph before context queries
@@ -124,8 +151,14 @@ def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=
     for i, (raw, f, behavior) in enumerate(prepared):
         hits = [] if behavior in NO_LOOKUP else select_hits(index.query(describe(f, behavior, stats), k=8))
         ev = build_event(f, f"E{i:06d}")
+        if provenance_key is not None:
+            ev = _sign_event_dict(ev, provenance_key)
         events.append(ev)
-        logs[ev["event_id"]] = render_log(raw, f, behavior, behavior_stats(f, stats), hits, graph.context(f["src"], f["dst"], hops))
+        ctx = graph.context(f["src"], f["dst"], hops)
+        logs[ev["event_id"]] = render_log(raw, f, behavior, behavior_stats(f, stats), hits, ctx)
+        if meta_out is not None:
+            meta_out[ev["event_id"]] = {"behavior": behavior, "mitre": hits, "context": ctx,
+                                        "s_score": raw.get("s_score"), "route": raw.get("route")}
 
     for src, dst in sorted(pairs):
         summ = graph.baseline_summary(src, dst)
@@ -137,9 +170,12 @@ def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=
         # verifier's 24h max_age and every claim citing it would come back stale. The real first and
         # last dates stay in the log text.
         eid = f"{BASE_PREFIX}{src}-{dst}"
-        events.append({"event_id": eid, "ts": (as_of - timedelta(seconds=1)).isoformat(), "rel": "baseline_connect",
-                       "src": src, "dst": dst, "source_system": "netflow_baseline",
-                       "parse_conf": 1.0, "match_conf": 1.0})
+        baseline_event = {"event_id": eid, "ts": (as_of - timedelta(seconds=1)).isoformat(),
+                          "rel": "baseline_connect", "src": src, "dst": dst,
+                          "source_system": "netflow_baseline", "parse_conf": 1.0, "match_conf": 1.0}
+        if provenance_key is not None:
+            baseline_event = _sign_event_dict(baseline_event, provenance_key)
+        events.append(baseline_event)
         logs[eid] = (f"[BASELINE] {summ['count']} known normal flows between {src} and {dst}, first seen "
                      f"{summ['first_ts']}, most recent {summ['last_ts']} (summary as of the incident start)")
     events.sort(key=lambda e: (e["ts"], e["event_id"]))

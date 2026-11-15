@@ -1,7 +1,5 @@
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from soc_agent.config import VerifierConfig
 from soc_agent.evidence_store import EvidenceStore
 from soc_agent.schemas import ChainStep, Claim, Event, Verdict
@@ -23,7 +21,6 @@ def base_store():
     s.add_event(ev("e1", "login_fail", "10.0.0.5", "host-a", 30))
     s.add_event(ev("e2", "login_success", "10.0.0.5", "host-a", 20))
     s.add_event(ev("e3", "exec", "host-a", "powershell", 10))
-    # a second source corroborates the key step
     s.add_event(ev("e2b", "login_success", "10.0.0.5", "host-a", 20, source="siem"))
     return s
 
@@ -56,7 +53,7 @@ def test_deleted_edge_gives_unknown():
 def test_reordered_events_contradicted():
     s = EvidenceStore()
     s.add_event(ev("e1", "login_fail", "10.0.0.5", "host-a", 10))
-    s.add_event(ev("e2", "login_success", "10.0.0.5", "host-a", 20))   # before the fail
+    s.add_event(ev("e2", "login_success", "10.0.0.5", "host-a", 20))
     s.add_event(ev("e3", "exec", "host-a", "powershell", 5))
     r = verify_claim(claim(), s, NOW)
     assert r.verdict == Verdict.CONTRADICTED
@@ -73,7 +70,7 @@ def test_stale_evidence_unknown():
 
 def test_future_timestamp_unknown():
     s = EvidenceStore()
-    s.add_event(ev("e1", "login_fail", "10.0.0.5", "host-a", -120))   # 2h in the future
+    s.add_event(ev("e1", "login_fail", "10.0.0.5", "host-a", -120))
     r = verify_claim(claim([CHAIN[0]]), s, NOW)
     assert r.verdict == Verdict.UNKNOWN
     assert any(x.startswith("future_timestamp") for x in r.reasons)
@@ -100,7 +97,7 @@ def test_single_source_penalty_pushes_high_impact_to_unknown():
     s.add_event(ev("e1", "login_fail", "10.0.0.5", "host-a", 30, parse=0.85, match=0.85))
     high = verify_claim(claim([CHAIN[0]], high=True), s, NOW)
     low = verify_claim(claim([CHAIN[0]], high=False), s, NOW)
-    assert high.verdict == Verdict.UNKNOWN      # 0.85 * 0.8 = 0.68 < 0.70
+    assert high.verdict == Verdict.UNKNOWN
     assert low.verdict == Verdict.SUPPORTED
 
 
@@ -109,17 +106,14 @@ def test_empty_chain_never_supported():
     assert r.verdict == Verdict.UNKNOWN
 
 
-# ---- ablation behaviour: disabling a module must change outcomes ----
-
 def test_ablation_no_order_check_accepts_reordered_chain():
     s = EvidenceStore()
     s.add_event(ev("e1", "login_fail", "10.0.0.5", "host-a", 10))
     s.add_event(ev("e2", "login_success", "10.0.0.5", "host-a", 20))
     s.add_event(ev("e3", "exec", "host-a", "powershell", 5))
     s.add_event(ev("e2b", "login_success", "10.0.0.5", "host-a", 20, source="siem"))
-    cfg = VerifierConfig(check_order=False)
-    r = verify_claim(claim(), s, NOW, cfg)
-    assert r.verdict == Verdict.SUPPORTED       # unsafe acceptance the full system prevents
+    r = verify_claim(claim(), s, NOW, VerifierConfig(check_order=False))
+    assert r.verdict == Verdict.SUPPORTED
 
 
 def test_ablation_binary_mode_collapses_unknown():
@@ -128,3 +122,42 @@ def test_ablation_binary_mode_collapses_unknown():
     s.remove_event("e2b")
     r = verify_claim(claim(), s, NOW, VerifierConfig(three_state=False))
     assert r.verdict == Verdict.CONTRADICTED
+
+
+def test_verifier_prefers_higher_confidence_matching_event():
+    s = EvidenceStore()
+    s.add_event(ev("e1", "login_fail", "10.0.0.5", "host-a", 30, parse=0.40, match=0.40))
+    s.add_event(ev("e2", "login_fail", "10.0.0.5", "host-a", 20, parse=0.95, match=0.95))
+    result = verify_claim(claim([CHAIN[0]], high=False), s, NOW)
+    assert result.verdict == Verdict.SUPPORTED
+    assert result.steps[0].event_id == "e2"
+
+
+def test_verifier_preserves_valid_temporal_chain_over_greedy_confidence():
+    s = EvidenceStore()
+    first, second = CHAIN[0], CHAIN[1]
+
+    s.add_event(ev("first-early", first.rel, first.src, first.dst, 30, parse=0.80, match=0.80))
+    s.add_event(ev("first-late", first.rel, first.src, first.dst, 10, parse=0.99, match=0.99))
+    s.add_event(ev("second-event", second.rel, second.src, second.dst, 20, parse=0.95, match=0.95))
+
+    result = verify_claim(claim(CHAIN[:2], high=False), s, NOW)
+    assert result.verdict == Verdict.SUPPORTED
+    assert result.steps[0].event_id == "first-early"
+    assert result.steps[1].event_id == "second-event"
+
+
+def test_verifier_prioritizes_weakest_link_confidence():
+    s = EvidenceStore()
+    first, second = CHAIN[0], CHAIN[1]
+
+    s.add_event(ev("a-first", first.rel, first.src, first.dst, 40, parse=0.80, match=0.80))
+    s.add_event(ev("a-second", second.rel, second.src, second.dst, 30, parse=0.80, match=0.80))
+    s.add_event(ev("b-first", first.rel, first.src, first.dst, 20, parse=0.99, match=0.99))
+    s.add_event(ev("b-second", second.rel, second.src, second.dst, 10, parse=0.75, match=0.75))
+
+    result = verify_claim(claim(CHAIN[:2], high=False), s, NOW)
+    assert result.verdict == Verdict.SUPPORTED
+    assert result.steps[0].event_id == "a-first"
+    assert result.steps[1].event_id == "a-second"
+    assert result.confidence == 0.80

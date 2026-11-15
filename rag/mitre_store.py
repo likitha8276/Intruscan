@@ -37,23 +37,64 @@ TECHNIQUES = [
 class TechniqueIndex:
     def __init__(self, path="chroma_db", techniques=None):
         import hashlib
+        import json
         import chromadb
         from chromadb.utils import embedding_functions
-        techniques = techniques or TECHNIQUES
-        # one collection per technique set, so switching between the small seed list and the
-        # full matrix never mixes old and new documents
-        key = hashlib.sha1(",".join(sorted(t["id"] for t in techniques)).encode()).hexdigest()[:8]
+
+        techniques = TECHNIQUES if techniques is None else techniques
+
+        key = hashlib.sha1(
+            ",".join(sorted(t["id"] for t in techniques)).encode()
+        ).hexdigest()[:8]
+
         self.client = chromadb.PersistentClient(path=path)
-        ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2"
+        )
         self.col = self.client.get_or_create_collection(
-            f"mitre_{key}", embedding_function=ef, metadata={"hnsw:space": "cosine"})
-        if self.col.count() != len(techniques):
-            for i in range(0, len(techniques), 100):
-                batch = techniques[i:i + 100]
-                self.col.upsert(
-                    ids=[t["id"] for t in batch],
-                    documents=[t["text"] for t in batch],
-                    metadatas=[{k: t[k] for k in ("name", "tactics", "url", "action")} for t in batch])
+            f"mitre_{key}",
+            embedding_function=ef,
+            metadata={"hnsw:space": "cosine"},
+        )
+
+        existing = self.col.get(include=["metadatas"])
+        existing_ids = set(existing["ids"])
+        desired_ids = {t["id"] for t in techniques}
+
+        stale_ids = existing_ids - desired_ids
+        if stale_ids:
+            self.col.delete(ids=sorted(stale_ids))
+
+        existing_meta = dict(zip(
+            existing["ids"], existing["metadatas"] or []
+        ))
+
+        changed = []
+        for t in techniques:
+            content = {
+                k: t.get(k, "")
+                for k in ("id", "name", "tactics", "url", "action", "text")
+            }
+            fingerprint = hashlib.sha256(
+                json.dumps(content, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+
+            metadata = {
+                k: t.get(k, "")
+                for k in ("name", "tactics", "url", "action")
+            }
+            metadata["_content_sha256"] = fingerprint
+
+            if existing_meta.get(t["id"], {}).get("_content_sha256") != fingerprint:
+                changed.append((t, metadata))
+
+        for i in range(0, len(changed), 100):
+            batch = changed[i:i + 100]
+            self.col.upsert(
+                ids=[t["id"] for t, _ in batch],
+                documents=[t["text"] for t, _ in batch],
+                metadatas=[m for _, m in batch],
+            )
 
     def query(self, text, k=3):
         r = self.col.query(query_texts=[text], n_results=min(k, self.col.count()))

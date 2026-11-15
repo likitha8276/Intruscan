@@ -215,6 +215,7 @@ def test_cli_accepts_requested_input_shorthand_and_auto_fallback(
     assert parsed.entity == [event["src"], event["dst"]]
     assert parsed.llm == "auto"
 
+    monkeypatch.setenv("SOC_PROVENANCE_KEY", "")
     # Run the real CLI: loaders, scenario, SOCAgent, verifier, gate, router, JSON output.
     cli.main(argv)
 
@@ -234,3 +235,35 @@ def test_cli_accepts_requested_input_shorthand_and_auto_fallback(
     assert isinstance(decoded["reasons"], list) and decoded["reasons"]
     assert decoded["verdicts"] == ["SUPPORTED"]
     assert decoded["outcome"] == "ESCALATE"
+
+
+def test_rag_handoff_runs_slow_brain_once_per_source_incident(tmp_path):
+    from rag import handoff
+
+    events = [
+        {"event_id": "event-1", "src": "192.0.2.1", "dst": "198.51.100.2"},
+        {"event_id": "event-2", "src": "192.0.2.1", "dst": "198.51.100.3"},
+    ]
+    logs = {}
+
+    with patch.object(
+        handoff, "build", return_value=(events, logs, 0)
+    ), patch.object(
+        handoff, "run_incident", return_value={"status": "OK"}
+    ) as mocked_run:
+        counts = handoff.run(
+            scored="unused.jsonl",
+            output=tmp_path / "alerts.jsonl",
+            index=None,
+        )
+
+    assert counts == (1, 2, 0)
+    assert mocked_run.call_count == 1
+    assert mocked_run.call_args.args[0] == "192.0.2.1"
+
+    results = [
+        json.loads(line)
+        for line in (tmp_path / "alerts.jsonl").read_text().splitlines()
+    ]
+    assert len(results) == 1
+    assert results[0]["soc_result"]["status"] == "OK"

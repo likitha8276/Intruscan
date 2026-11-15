@@ -1,0 +1,1635 @@
+From 429104e15e96f5dcc47329fa33cad0224292cf34 Mon Sep 17 00:00:00 2001
+From: likitha8276 <likitha.23bce8276@vitapstudent.ac.in>
+Date: Sun, 15 Nov 2026 15:50:19 +0530
+Subject: [PATCH] Add feature sets, incident management and dashboard
+ integration
+
+---
+ dashboard/__init__.py   |   0
+ dashboard/app.py        | 636 ++++++++++++++++++++++++++++++++++++++++
+ dashboard/data.py       | 145 +++++++++
+ rag/bridge.py           |  27 +-
+ rag/event_builder.py    |  30 +-
+ rag/handoff.py          |  47 ++-
+ soc_agent/fast_brain.py |  20 +-
+ soc_agent/features.py   | 128 ++++++++
+ soc_agent/incidents.py  | 403 +++++++++++++++++++++++++
+ 9 files changed, 1417 insertions(+), 19 deletions(-)
+ create mode 100644 dashboard/__init__.py
+ create mode 100644 dashboard/app.py
+ create mode 100644 dashboard/data.py
+ create mode 100644 soc_agent/features.py
+ create mode 100644 soc_agent/incidents.py
+
+diff --git a/dashboard/__init__.py b/dashboard/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/dashboard/app.py b/dashboard/app.py
+new file mode 100644
+index 0000000..b519acd
+--- /dev/null
++++ b/dashboard/app.py
+@@ -0,0 +1,636 @@
++
++"""INTRUSCAN SOC dashboard (Streamlit)."""
++
++from __future__ import annotations
++
++import os
++import sys
++from pathlib import Path
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++if str(ROOT) not in sys.path:
++    sys.path.insert(0, str(ROOT))
++
++import matplotlib
++matplotlib.use("Agg")
++import matplotlib.pyplot as plt
++import networkx as nx
++import pandas as pd
++import streamlit as st
++
++from dashboard import data
++from soc_agent.incidents import IncidentStore
++
++
++st.set_page_config(page_title="INTRUSCAN SOC", layout="wide")
++st.title("INTRUSCAN - SOC dashboard")
++
++
++# --------------------------------------------------
++# SIDEBAR
++# --------------------------------------------------
++
++with st.sidebar:
++    st.header("Data sources")
++
++    scored_path = st.text_input(
++        "Scored flows (JSONL)",
++        os.environ.get("INTRUSCAN_SCORED", "scored_flows.jsonl"),
++    )
++
++    db_path = st.text_input(
++        "Incident store (SQLite)",
++        os.environ.get("INTRUSCAN_INCIDENT_DB", "incidents.db"),
++    )
++
++    max_rows = st.number_input(
++        "Max flow rows to load",
++        1_000,
++        1_000_000,
++        200_000,
++        step=10_000,
++    )
++
++    st.caption("Refresh the page (or press R) to re-read the files.")
++
++
++# --------------------------------------------------
++# DATASET UPLOAD AND PIPELINE
++# --------------------------------------------------
++
++st.subheader("Upload dataset and run analysis")
++
++uploaded_file = st.file_uploader(
++    "Upload CICIDS2017 CSV",
++    type=["csv"],
++    help="Upload a CICIDS2017 flow CSV file.",
++)
++
++if st.button(
++    "Run Intruscan analysis",
++    type="primary",
++    disabled=uploaded_file is None,
++):
++    model_path = ROOT / "data" / "models" / "fast_brain_cicids2017.joblib"
++    scored_output = Path(scored_path)
++    incident_db = Path(db_path)
++    rag_output = ROOT / "rag_soc_alerts.jsonl"
++
++    if not model_path.is_file():
++        st.error(f"Trained model not found: {model_path}")
++
++    else:
++        scored_output.parent.mkdir(parents=True, exist_ok=True)
++        incident_db.parent.mkdir(parents=True, exist_ok=True)
++
++        def run_step(label, command):
++            st.write(f"**{label}**")
++
++            result = subprocess.run(
++                command,
++                cwd=ROOT,
++                capture_output=True,
++                text=True,
++            )
++
++            if result.stdout:
++                st.code(result.stdout)
++
++            if result.stderr:
++                st.code(result.stderr)
++
++            if result.returncode != 0:
++                raise RuntimeError(
++                    f"{label} failed with exit code {result.returncode}"
++                )
++
++        try:
++            with tempfile.TemporaryDirectory() as temp_dir:
++                temp_dir = Path(temp_dir)
++
++                csv_path = temp_dir / Path(uploaded_file.name).name
++                parsed_path = temp_dir / "parsed_flows.jsonl"
++
++                csv_path.write_bytes(uploaded_file.getvalue())
++
++                with st.spinner("Processing uploaded dataset..."):
++
++                    # STEP 1: CSV PARSING
++                    run_step(
++                        "Step 1: Parsing CSV",
++                        [
++                            sys.executable,
++                            "tools/parse_cicids2017.py",
++                            str(csv_path),
++                            str(parsed_path),
++                        ],
++                    )
++
++                    # STEP 2: FAST BRAIN
++                    run_step(
++                        "Step 2: Fast Brain scoring",
++                        [
++                            sys.executable,
++                            "-m",
++                            "soc_agent.fast_brain_cli",
++                            "score",
++                            "--input",
++                            str(parsed_path),
++                            "--model",
++                            str(model_path),
++                            "--output",
++                            str(scored_output),
++                        ],
++                    )
++
++                    # STEP 3: RAG AND AGENTIC SLOW BRAIN
++                    run_step(
++                        "Step 3: RAG / Slow Brain handoff",
++                        [
++                            sys.executable,
++                            "-m",
++                            "rag.handoff",
++                            "--scored",
++                            str(scored_output),
++                            "--output",
++                            str(rag_output),
++                            "--incident-db",
++                            str(incident_db),
++                            "--fast-brain-model",
++                            str(model_path),
++                            "--llm",
++                            "auto",
++                            "--model",
++                            "openai/gpt-oss-20b",
++                        ],
++                    )
++
++            st.success("Dataset processed successfully!")
++            st.cache_data.clear()
++            st.rerun()
++
++        except Exception as exc:
++            st.error(f"Analysis failed: {exc}")
++
++
++# --------------------------------------------------
++# LOAD DATA
++# --------------------------------------------------
++
++
++def _flows(path: str, rows: int, mtime: float):
++    return data.load_scored_flows(path, rows)
++
++
++
++flows_file = Path(scored_path)
++
++flows_mtime = (
++    flows_file.stat().st_mtime
++    if flows_file.is_file()
++    else 0.0
++)
++
++loaded = _flows(scored_path, int(max_rows), flows_mtime)
++
++frame = loaded.frame
++
++store = (
++    IncidentStore(db_path)
++    if Path(db_path).is_file()
++    else None
++)
++
++incidents = data.incidents_frame(store)
++
++
++if frame.empty and incidents.empty:
++    st.info(
++        "No data yet. Produce scored flows with "
++        "`python -m soc_agent.fast_brain_cli score ... --output "
++        f"{scored_path}` and incidents with the handoff tools' "
++        f"`--incident-db {db_path}` option."
++    )
++
++
++# --------------------------------------------------
++# DASHBOARD TABS
++# --------------------------------------------------
++
++overview, incidents_tab, investigate, mitre_tab, graph_tab, history = (
++    st.tabs(
++        [
++            "Overview",
++            "Incidents",
++            "Investigation",
++            "MITRE ATT&CK",
++            "Host graph",
++            "History",
++        ]
++    )
++)
++
++
++# --------------------------------------------------
++# 1. OVERVIEW
++# --------------------------------------------------
++
++with overview:
++
++    counts = data.route_counts(frame)
++
++    cols = st.columns(4)
++
++    cols[0].metric("Flows processed", f"{len(frame):,}")
++    cols[1].metric("CLEAR", f"{counts['CLEAR']:,}")
++    cols[2].metric("SLOW_BRAIN", f"{counts['SLOW_BRAIN']:,}")
++    cols[3].metric("FAST_TRACK", f"{counts['FAST_TRACK']:,}")
++
++    if loaded.invalid_rows:
++        st.warning(
++            f"{loaded.invalid_rows} unreadable rows were skipped."
++        )
++
++    if loaded.truncated:
++        st.warning(
++            f"Only the most recent {int(max_rows):,} rows are loaded."
++        )
++
++    if not frame.empty:
++
++        left, right = st.columns(2)
++
++        left.subheader("Benign vs suspicious (model routing)")
++        left.bar_chart(pd.Series(data.traffic_split(frame)))
++
++        left.caption(
++            "Suspicious = routed to SLOW_BRAIN or FAST_TRACK. "
++            "Not a confirmed attack."
++        )
++
++        right.subheader("Routing decisions")
++        right.bar_chart(pd.Series(counts))
++
++        if "s_score" in frame:
++            st.subheader("Anomaly score distribution")
++
++            st.bar_chart(
++                pd.cut(
++                    frame["s_score"].astype(float),
++                    bins=20,
++                ).value_counts().sort_index().rename(str)
++            )
++
++        crosstab = data.label_vs_route(frame)
++
++        if not crosstab.empty:
++            st.subheader("Dataset label vs route (ground truth, when present)")
++            st.dataframe(crosstab)
++
++        quality = data.timestamp_quality(frame)
++
++        if set(quality) - {"absolute"}:
++            st.warning(
++                f"Timestamp quality: {quality}. "
++                "Surrogate/missing timestamps are excluded from verification."
++            )
++
++    if not incidents.empty:
++        st.subheader("Threat severity (incident priority)")
++        st.bar_chart(incidents["priority"].value_counts())
++
++
++# --------------------------------------------------
++# 2. INCIDENTS
++# --------------------------------------------------
++
++with incidents_tab:
++
++    if incidents.empty:
++        st.write("No incidents recorded.")
++
++    else:
++        kinds = st.multiselect(
++            "Kind",
++            sorted(incidents["kind"].unique()),
++            default=sorted(incidents["kind"].unique()),
++        )
++
++        prios = st.multiselect(
++            "Priority",
++            sorted(incidents["priority"].unique()),
++            default=sorted(incidents["priority"].unique()),
++        )
++
++        view = incidents[
++            incidents["kind"].isin(kinds)
++            & incidents["priority"].isin(prios)
++        ]
++
++        st.dataframe(
++            view[
++                [
++                    "incident_id",
++                    "kind",
++                    "priority",
++                    "disposition",
++                    "llm_called",
++                    "src",
++                    "dst",
++                    "s_score",
++                    "flow_count",
++                    "ts_kind",
++                    "recorded_at",
++                ]
++            ],
++            use_container_width=True,
++        )
++
++
++# --------------------------------------------------
++# 3. AGENTIC AI INVESTIGATION
++# --------------------------------------------------
++
++with investigate:
++
++    if incidents.empty:
++        st.write("No incidents recorded.")
++
++    else:
++        chosen = st.selectbox(
++            "Incident",
++            list(incidents["incident_id"]),
++        )
++
++        record = store.get(chosen) if store else None
++
++        if record:
++
++            a, b, c = st.columns(3)
++
++            a.metric("Priority", record["priority"])
++            b.metric("Disposition", record["disposition"])
++            c.metric(
++                "LLM called",
++                "yes" if record["llm_called"] else "no",
++            )
++
++            st.write(
++                {
++                    k: record[k]
++                    for k in (
++                        "kind",
++                        "src",
++                        "dst",
++                        "route",
++                        "s_score",
++                        "first_flow_ts",
++                        "ts_kind",
++                        "ts_original",
++                        "feature_set",
++                        "model_sha256",
++                        "thresholds",
++                    )
++                }
++            )
++
++            st.subheader("Reasons")
++            st.write(record["reasons"])
++
++            # AGENTIC AI RESULTS
++            soc = record.get("soc_result") or {}
++
++            if soc:
++
++                st.divider()
++                st.subheader("Agentic AI Investigation")
++
++                st.success(
++                    "SOC Agent investigation result available"
++                )
++
++                # AGENT DECISION
++                a, b, c = st.columns(3)
++
++                a.metric(
++                    "Agent outcome",
++                    soc.get("outcome", "Unknown"),
++                )
++
++                b.metric(
++                    "LLM execution",
++                    f"{soc.get('llm_ms', 0):.1f} ms",
++                )
++
++                c.metric(
++                    "Verification",
++                    f"{soc.get('verify_ms', 0):.2f} ms",
++                )
++
++                # REASONING
++                st.markdown("#### 1. Agent decision and reasoning")
++
++                st.write(
++                    soc.get(
++                        "reasons",
++                        ["No reasons returned"],
++                    )
++                )
++
++                # PROPOSED ACTION
++                st.markdown("#### 2. Proposed action")
++
++                action = soc.get("action")
++
++                if action:
++                    st.json(action)
++                else:
++                    st.info("No action proposed by the agent.")
++
++                # VERIFICATION
++                st.markdown("#### 3. Evidence verification")
++
++                verdicts = soc.get("verdicts", [])
++
++                if verdicts:
++                    for verdict in verdicts:
++                        st.write(f"• {verdict}")
++                else:
++                    st.info(
++                        "No verification verdicts returned."
++                    )
++
++                # RISK GATE
++                st.markdown("#### 4. Risk gate")
++
++                flags = soc.get("gate_flags", [])
++
++                if flags:
++                    for flag in flags:
++                        st.warning(flag)
++                else:
++                    st.success(
++                        "No risk-gate flags returned."
++                    )
++
++                # COMPLETE RESPONSE
++                with st.expander(
++                    "View complete SOC agent response"
++                ):
++                    st.json(soc)
++
++            else:
++                st.info(
++                    "No SOC agent result is stored for this incident."
++                )
++
++            # EVIDENCE
++            st.divider()
++            st.subheader("Evidence")
++
++            evidence = record["evidence"]
++
++            if evidence.get("logs"):
++                for event_id, text in evidence["logs"].items():
++                    st.code(f"[{event_id}]\n{text}")
++
++            if evidence.get("events"):
++                st.dataframe(
++                    pd.DataFrame(evidence["events"]),
++                    use_container_width=True,
++                )
++
++            if evidence.get("flows"):
++                st.dataframe(
++                    pd.DataFrame(evidence["flows"]),
++                    use_container_width=True,
++                )
++
++            # MITRE DETAILS
++            if record["mitre"]:
++                st.subheader("ATT&CK candidates (similarity-ranked, not verdicts)")
++
++                st.dataframe(
++                    pd.DataFrame(record["mitre"]),
++                    use_container_width=True,
++                )
++
++            if record["kind"] == "fast_track":
++                st.info(
++                    "FAST_TRACK: recorded as HIGH priority without "
++                    "an LLM call. No ATT&CK lookup was performed."
++                )
++
++
++# --------------------------------------------------
++# 4. MITRE ATT&CK
++# --------------------------------------------------
++
++with mitre_tab:
++
++    summary = data.mitre_summary(
++        store.list() if store else []
++    )
++
++    if summary.empty:
++        st.write(
++            "No ATT&CK candidates recorded "
++            "(they come from the RAG handoff)."
++        )
++
++    else:
++        st.dataframe(
++            summary,
++            use_container_width=True,
++        )
++
++        st.caption(
++            "Candidates retrieved by VectorRAG; cosine confidence "
++            "does not separate right from wrong matches."
++        )
++
++
++# --------------------------------------------------
++# 5. HOST GRAPH
++# --------------------------------------------------
++
++with graph_tab:
++
++    graph = data.host_graph(frame)
++
++    if graph.number_of_edges() == 0:
++        st.write("No suspicious flows to draw.")
++
++    else:
++        fig, ax = plt.subplots(figsize=(9, 6))
++
++        pos = nx.spring_layout(graph, seed=7)
++
++        colors = [
++            "tab:red" if d["fast_track"] else "tab:orange"
++            for _, _, d in graph.edges(data=True)
++        ]
++
++        widths = [
++            1 + min(d["flows"], 20) / 4
++            for _, _, d in graph.edges(data=True)
++        ]
++
++        nx.draw_networkx(
++            graph,
++            pos,
++            ax=ax,
++            node_size=300,
++            font_size=7,
++            edge_color=colors,
++            width=widths,
++            arrows=True,
++        )
++
++        ax.axis("off")
++
++        st.pyplot(fig)
++        plt.close(fig)
++
++        st.caption(
++            "Red = includes FAST_TRACK flows, orange = SLOW_BRAIN only. "
++            "Edge width ~ flow count (capped)."
++        )
++
++
++# --------------------------------------------------
++# 6. HISTORY
++# --------------------------------------------------
++
++with history:
++
++    if incidents.empty:
++        st.write("No incidents recorded.")
++
++    else:
++        per_day = (
++            incidents.dropna(subset=["recorded_at"])
++            .set_index("recorded_at")
++            .resample("1D")
++            .size()
++        )
++
++        st.bar_chart(
++            per_day.rename("incidents recorded")
++        )
++
++        st.dataframe(
++            incidents[
++                [
++                    "recorded_at",
++                    "incident_id",
++                    "kind",
++                    "priority",
++                    "disposition",
++                    "src",
++                ]
++            ],
++            width="stretch",
++        )
+diff --git a/dashboard/data.py b/dashboard/data.py
+new file mode 100644
+index 0000000..5968ab2
+--- /dev/null
++++ b/dashboard/data.py
+@@ -0,0 +1,145 @@
++"""Read-only data access for the SOC dashboard.
++
++Everything here reads the project's real outputs: the scored-flow JSONL written by
++``soc_agent.fast_brain_cli score`` and the incident store written by the handoff tools
++(``soc_agent.incidents``). Missing files give empty results, never invented ones.
++"""
++
++from __future__ import annotations
++
++import json
++from collections import Counter
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any
++
++import networkx as nx
++import pandas as pd
++
++from soc_agent.incidents import IncidentStore
++
++ROUTES = ("CLEAR", "SLOW_BRAIN", "FAST_TRACK")
++
++
++@dataclass
++class LoadedFlows:
++    frame: pd.DataFrame
++    invalid_rows: int
++    truncated: bool
++
++
++def load_scored_flows(path: str | Path | None, max_rows: int = 200_000) -> LoadedFlows:
++    """Load a scored JSONL (most recent ``max_rows`` rows if larger). Missing file -> empty."""
++    if not path or not Path(path).is_file():
++        return LoadedFlows(pd.DataFrame(), 0, False)
++    rows: list[dict[str, Any]] = []
++    invalid = 0
++    total = 0
++    with open(path, encoding="utf-8") as source:
++        for line in source:
++            if not line.strip():
++                continue
++            total += 1
++            try:
++                row = json.loads(line)
++                if not isinstance(row, dict) or "route" not in row:
++                    raise ValueError("not a scored flow")
++            except (json.JSONDecodeError, ValueError):
++                invalid += 1
++                continue
++            rows.append(row)
++            if len(rows) > max_rows:
++                rows.pop(0)
++    return LoadedFlows(pd.DataFrame(rows), invalid, total - invalid > max_rows)
++
++
++def route_counts(frame: pd.DataFrame) -> dict[str, int]:
++    counts = Counter(frame["route"]) if "route" in frame else Counter()
++    return {route: int(counts.get(route, 0)) for route in ROUTES}
++
++
++def traffic_split(frame: pd.DataFrame) -> dict[str, int]:
++    """Predicted benign (CLEAR) vs suspicious (SLOW_BRAIN or FAST_TRACK). This is the model's
++    routing, not ground truth: a suspicious route is not a confirmed attack."""
++    counts = route_counts(frame)
++    return {
++        "benign (CLEAR)": counts["CLEAR"],
++        "suspicious (SLOW_BRAIN + FAST_TRACK)": counts["SLOW_BRAIN"] + counts["FAST_TRACK"],
++    }
++
++
++def label_vs_route(frame: pd.DataFrame) -> pd.DataFrame:
++    """Crosstab of the dataset's own label against the route (only if flows carry labels)."""
++    if frame.empty or "label" not in frame or "route" not in frame:
++        return pd.DataFrame()
++    return pd.crosstab(frame["label"], frame["route"]).reindex(columns=list(ROUTES), fill_value=0)
++
++
++def timestamp_quality(frame: pd.DataFrame) -> dict[str, int]:
++    if frame.empty:
++        return {}
++    kinds = frame["ts_kind"].fillna("absolute") if "ts_kind" in frame else pd.Series("absolute", index=frame.index)
++    return {str(k): int(v) for k, v in kinds.value_counts().items()}
++
++
++def _col(frame: pd.DataFrame, *names: str) -> str | None:
++    return next((n for n in names if n in frame), None)
++
++
++def host_graph(frame: pd.DataFrame, routes: tuple[str, ...] = ("SLOW_BRAIN", "FAST_TRACK"), max_edges: int = 200) -> nx.DiGraph:
++    """Directed host graph of non-CLEAR flows; edge attributes aggregate what was observed."""
++    graph = nx.DiGraph()
++    if frame.empty or "route" not in frame:
++        return graph
++    src_col = _col(frame, "src_ip", "source_ip")
++    dst_col = _col(frame, "dst_ip", "dest_ip")
++    if not src_col or not dst_col:
++        return graph
++    subset = frame[frame["route"].isin(routes)]
++    edges: dict[tuple[str, str], dict[str, Any]] = {}
++    for row in subset.itertuples(index=False):
++        d = row._asdict()
++        key = (str(d[src_col]), str(d[dst_col]))
++        e = edges.setdefault(key, {"flows": 0, "max_score": 0.0, "fast_track": False})
++        e["flows"] += 1
++        score = d.get("s_score")
++        if isinstance(score, (int, float)) and score == score:
++            e["max_score"] = max(e["max_score"], float(score))
++        e["fast_track"] = e["fast_track"] or d.get("route") == "FAST_TRACK"
++    for (s, t), attrs in sorted(edges.items(), key=lambda kv: -kv[1]["flows"])[:max_edges]:
++        graph.add_edge(s, t, **attrs)
++    return graph
++
++
++def incidents_frame(store: IncidentStore | None) -> pd.DataFrame:
++    if store is None:
++        return pd.DataFrame()
++    rows = store.list()
++    if not rows:
++        return pd.DataFrame()
++    frame = pd.DataFrame(rows)
++    frame["flow_count"] = frame["flow_ids"].map(len)
++    frame["recorded_at"] = pd.to_datetime(frame["recorded_at"], utc=True, errors="coerce")
++    return frame
++
++
++def mitre_summary(incidents: list[dict[str, Any]]) -> pd.DataFrame:
++    """ATT&CK technique candidates retrieved by VectorRAG, aggregated across incidents.
++
++    These are similarity-ranked candidates, not verdicts (see rag/README.md)."""
++    agg: dict[str, dict[str, Any]] = {}
++    for incident in incidents:
++        seen: set[str] = set()
++        for hit in incident.get("mitre") or []:
++            tid = hit.get("technique_id")
++            if not tid:
++                continue
++            e = agg.setdefault(tid, {"technique_id": tid, "name": hit.get("name", ""), "tactics": hit.get("tactics", ""),
++                                     "incidents": 0, "max_confidence": 0.0})
++            if tid not in seen:
++                e["incidents"] += 1
++                seen.add(tid)
++            e["max_confidence"] = max(e["max_confidence"], float(hit.get("confidence", 0.0)))
++    if not agg:
++        return pd.DataFrame(columns=["technique_id", "name", "tactics", "incidents", "max_confidence"])
++    return pd.DataFrame(sorted(agg.values(), key=lambda r: (-r["incidents"], -r["max_confidence"])))
+diff --git a/rag/bridge.py b/rag/bridge.py
+index b89778c..99c9834 100644
+--- a/rag/bridge.py
++++ b/rag/bridge.py
+@@ -8,7 +8,7 @@ The ground truth `label` is never copied into events or logs.
+ import argparse, json, sys
+ from datetime import timedelta
+ from .graph_store import FlowGraph, parse_ts
+-from .event_builder import normalize, SrcStats, infer_behavior, describe, behavior_stats, build_event
++from .event_builder import normalize, is_timed, SrcStats, infer_behavior, describe, behavior_stats, build_event
+ 
+ BASE_PREFIX = "BASE-"
+ 
+@@ -77,9 +77,18 @@ def _rows(path):
+                     yield None
+ 
+ 
+-def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=None, baseline_label=None):
++def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=None, baseline_label=None,
++          untimed_out=None, meta_out=None):
+     """Returns (events, logs {event_id: text}, skipped).
+ 
++    Surrogate / missing timestamps: a SLOW_BRAIN flow whose timestamp is not real event time is NOT
++    turned into an event, not added to the anomaly graph and not sent to VectorRAG, because the
++    verifier and the baseline dating depend on actual time. Such raw rows are appended to
++    `untimed_out` (if given) so the caller can record them for an analyst. Untimed baseline flows
++    still count toward "this pair talks routinely" but contribute no dates. `meta_out` (if given)
++    receives {event_id: {"behavior", "mitre", "context"}} so callers can keep the structured
++    ATT&CK candidates instead of re-parsing log text.
++
+     Baseline source: by default the CLEAR flows in the scored file. That breaks for recurring jobs the
+     fast brain finds unusual (a nightly backup never gets cleared, so it never becomes baseline). Pass
+     baseline_path (the normal data the fast brain was trained on) and baseline_label (the same
+@@ -93,7 +102,11 @@ def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=
+         if not f["src"] or not f["dst"]:
+             skipped += 1
+             continue
+-        if raw.get("route") == "SLOW_BRAIN":             # FAST_TRACK bypasses this layer by design
++        if raw.get("route") == "SLOW_BRAIN":             # FAST_TRACK is recorded by soc_agent.incidents
++            if not is_timed(f):
++                if untimed_out is not None:
++                    untimed_out.append(raw)
++                continue
+             slow.append((raw, f))
+             stats.add(f)
+             dt, pair = parse_ts(f["ts"]), (f["src"], f["dst"])
+@@ -112,7 +125,7 @@ def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=
+         f = normalize(raw)
+         pair = (f["src"], f["dst"])
+         if pair in pairs:
+-            graph.add_baseline(*pair, ts=f["ts"], before=first_inc.get(pair))
++            graph.add_baseline(*pair, ts=f["ts"] if is_timed(f) else None, before=first_inc.get(pair))
+ 
+     prepared = []
+     for raw, f in slow:                                  # anomalies join the graph before context queries
+@@ -125,7 +138,11 @@ def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=
+         hits = [] if behavior in NO_LOOKUP else select_hits(index.query(describe(f, behavior, stats), k=8))
+         ev = build_event(f, f"E{i:06d}")
+         events.append(ev)
+-        logs[ev["event_id"]] = render_log(raw, f, behavior, behavior_stats(f, stats), hits, graph.context(f["src"], f["dst"], hops))
++        ctx = graph.context(f["src"], f["dst"], hops)
++        logs[ev["event_id"]] = render_log(raw, f, behavior, behavior_stats(f, stats), hits, ctx)
++        if meta_out is not None:
++            meta_out[ev["event_id"]] = {"behavior": behavior, "mitre": hits, "context": ctx,
++                                        "s_score": raw.get("s_score"), "route": raw.get("route")}
+ 
+     for src, dst in sorted(pairs):
+         summ = graph.baseline_summary(src, dst)
+diff --git a/rag/event_builder.py b/rag/event_builder.py
+index bdc2b4a..bc6b4bb 100644
+--- a/rag/event_builder.py
++++ b/rag/event_builder.py
+@@ -12,8 +12,7 @@ The MITRE similarity score is NOT put here: soc_agent applies a confidence thres
+ and a cosine score of ~0.5 would mark every step low confidence.
+ """
+ from collections import defaultdict
+-from datetime import datetime, timezone
+-from .graph_store import is_internal
++from .graph_store import is_internal, parse_ts
+ 
+ AUTH_PORTS = {21, 22, 23, 445, 3389}
+ PORTSCAN_MIN_TARGETS = 15
+@@ -40,7 +39,19 @@ def normalize(flow):
+             "src": g("src_ip", "source_ip"), "dst": g("dst_ip", "dest_ip"),
+             "dport": g("dst_port"), "proto": g("protocol"),
+             "packets": g("packets", "packet_count"), "bytes": g("bytes", "byte_count"),
+-            "s_score": flow.get("s_score")}
++            "s_score": flow.get("s_score"),
++            # "absolute" unless the converter marked the timestamp as a placeholder
++            "ts_kind": flow.get("ts_kind") or "absolute",
++            "ts_original": flow.get("ts_original")}
++
++
++def is_timed(f):
++    """True only when the flow has a real, parseable event time.
++
++    Flows with a missing or surrogate timestamp are kept in the pipeline but must not feed
++    anything that depends on actual event time (verifier freshness/order, baseline dating).
++    """
++    return f.get("ts_kind", "absolute") == "absolute" and parse_ts(f.get("ts")) is not None
+ 
+ 
+ class SrcStats:
+@@ -86,9 +97,12 @@ def behavior_stats(f, st):
+ 
+ 
+ def build_event(f, fallback_id):
+-    # keep the timestamp as the flow had it (soc_agent/io.py parses RFC3339 and space-separated);
+-    # the schema needs a ts, so fall back to ingestion time and lower parse_conf
+-    ts = f["ts"] or datetime.now(timezone.utc).isoformat(timespec="seconds")
+-    return {"event_id": f["flow_id"] or fallback_id, "ts": ts, "rel": "connect",
++    # keep the timestamp as the flow had it (soc_agent/io.py parses RFC3339 and space-separated).
++    # A flow without a real timestamp is never turned into an event: inventing a time (the old
++    # "ingestion time" fallback) would let the verifier treat it as fresh, ordered evidence.
++    if not is_timed(f):
++        raise ValueError(f"flow {f.get('flow_id')!r} has no real event timestamp "
++                         f"(ts_kind={f.get('ts_kind')!r}); it must not become an event")
++    return {"event_id": f["flow_id"] or fallback_id, "ts": f["ts"], "rel": "connect",
+             "src": f["src"], "dst": f["dst"], "source_system": "netflow",
+-            "parse_conf": 1.0 if f["ts"] else 0.85, "match_conf": 1.0}
++            "parse_conf": 1.0, "match_conf": 1.0}
+diff --git a/rag/handoff.py b/rag/handoff.py
+index 3b981b2..7522669 100644
+--- a/rag/handoff.py
++++ b/rag/handoff.py
+@@ -7,6 +7,7 @@ import argparse, json, logging, subprocess, sys, tempfile
+ from collections import defaultdict
+ from pathlib import Path
+ from .bridge import build, BASE_PREFIX
++from soc_agent import incidents as inc_mod
+ 
+ LOG = logging.getLogger("rag.handoff")
+ PROJECT_ROOT = Path(__file__).resolve().parents[1]
+@@ -20,7 +21,7 @@ def _err(status, reason, stdout="", stderr=""):
+ def run_incident(src, events, logs, python, model, config, timeout, root, max_entities=5, llm="auto"):
+     with tempfile.TemporaryDirectory(prefix="rag-incident-") as d:
+         ev, lg = Path(d) / "events.jsonl", Path(d) / "logs.json"
+-        ev.write_text("".join(json.dumps(e) + "\\n" for e in events), encoding="utf-8")
++        ev.write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+         lg.write_text(json.dumps({e["event_id"]: logs[e["event_id"]] for e in events}), encoding="utf-8")
+         entities = [src] + sorted({e["dst"] for e in events})[: max_entities - 1]
+         cmd = [python, "-m", "soc_agent.cli", "--input", str(ev), "--logs", str(lg)]
+@@ -49,8 +50,26 @@ def run_incident(src, events, logs, python, model, config, timeout, root, max_en
+ 
+ def run(scored, output, index, python=sys.executable, model="openai/gpt-oss-20b",
+         config="D_full", timeout=300.0,
+-        max_events=12, root=PROJECT_ROOT, baseline_path=None, baseline_label=None, llm="auto"):
+-    events, logs, skipped = build(scored, index, baseline_path=baseline_path, baseline_label=baseline_label)
++        max_events=12, root=PROJECT_ROOT, baseline_path=None, baseline_label=None, llm="auto",
++        incident_store=None, run_context=None):
++    """Group SLOW_BRAIN flows per source and call the SOC CLI once per source.
++
++    With `incident_store` (a soc_agent.incidents.IncidentStore) every analysed source, every
++    untimed flow (missing/surrogate timestamp, never sent to the LLM) and the result metadata is
++    also recorded as an incident. `run_context` may carry model_sha256 / feature_set / thresholds.
++    """
++    untimed, meta = [], {}
++    events, logs, skipped = build(scored, index, baseline_path=baseline_path, baseline_label=baseline_label,
++                                  untimed_out=untimed, meta_out=meta)
++    ctx = run_context or {}
++    if incident_store is not None:
++        for raw in untimed:
++            try:
++                incident_store.save(inc_mod.untimed_incident(raw, **ctx))
++            except ValueError as exc:
++                LOG.error("cannot record untimed flow: %s", exc)
++    if untimed:
++        LOG.warning("%d SLOW_BRAIN flows have missing/surrogate timestamps; not sent to the LLM", len(untimed))
+     groups = defaultdict(list)
+     for e in events:
+         groups[e["src"]].append(e)
+@@ -63,10 +82,16 @@ def run(scored, output, index, python=sys.executable, model="openai/gpt-oss-20b"
+             # ride along, and a scanner can own thousands of flows, so the incident part is capped
+             sent = base + inc[:max_events]
+             result = run_incident(src, sent, logs, python, model, config, timeout, root, llm=llm)
++            result = run_incident(src, sent, logs, python, model, config, timeout, root, llm=llm)
+             dest.write(json.dumps({"src": src, "event_ids": [e["event_id"] for e in sent],
+                                    "events_total": len(inc), "events_sent": len(sent),
+-                                   "soc_result": result}, ensure_ascii=False) + "\\n")
++                                   "soc_result": result}, ensure_ascii=False) + "\n")
+             dest.flush()
++            if incident_store is not None:
++                mitre = [dict(h, event_id=e["event_id"]) for e in sent for h in meta.get(e["event_id"], {}).get("mitre", [])]
++                incident_store.save(inc_mod.slow_brain_incident(
++                    src=src, events=sent, logs=logs, soc_result=result, mitre=mitre,
++                    flows=[{"s_score": meta.get(e["event_id"], {}).get("s_score")} for e in sent], **ctx), replace=True)
+             LOG.info("incident src=%s events=%d/%d status=%s", src, len(sent), len(inc), result["status"])
+     return len(groups), len(events), skipped
+ 
+@@ -89,14 +114,26 @@ def main():
+     ap.add_argument("--config", default="D_full")
+     ap.add_argument("--timeout", type=float, default=300.0)
+     ap.add_argument("--max-events", type=int, default=12)
++    ap.add_argument("--incident-db", type=Path, default=None,
++                    help="also record incidents (Slow Brain, FAST_TRACK, untimed) in this SQLite store")
++    ap.add_argument("--fast-brain-model", default=None,
++                    help="trusted model .joblib; its fingerprint and feature set are stored with incidents")
++    ap.add_argument("--thresholds", default=None, help="approved thresholds file (with --fast-brain-model)")
+     a = ap.parse_args()
+     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+     from . import bridge as _bridge
+     _bridge.MIN_CONF, _bridge.GAP, _bridge.MAX_HITS = a.min_conf, a.gap, a.max_hits
+     from .mitre_store import make_index
++    store, ctx = None, None
++    if a.incident_db:
++        store = inc_mod.IncidentStore(a.incident_db)
++        ctx = (inc_mod.run_context_from_model(a.fast_brain_model, a.thresholds) if a.fast_brain_model else {})
++        counts = inc_mod.record_scored_file(a.scored, store, ctx, include_untimed=False)
++        LOG.info("FAST_TRACK incidents recorded (no LLM): %s", counts)
+     n_inc, n_ev, skipped = run(a.scored, a.output, make_index(a.mitre, a.chroma_path, a.mitre_scope), a.python,
+                                a.model, a.config, a.timeout, a.max_events,
+-                               baseline_path=a.baseline_file, baseline_label=a.baseline_label, llm=a.llm)
++                               baseline_path=a.baseline_file, baseline_label=a.baseline_label, llm=a.llm,
++                               incident_store=store, run_context=ctx)
+     LOG.info("done incidents=%d events=%d skipped=%d", n_inc, n_ev, skipped)
+ 
+ 
+diff --git a/soc_agent/fast_brain.py b/soc_agent/fast_brain.py
+index 47f408a..f1f1604 100644
+--- a/soc_agent/fast_brain.py
++++ b/soc_agent/fast_brain.py
+@@ -9,6 +9,7 @@ from typing import Self
+ import numpy as np
+ from sklearn.ensemble import IsolationForest
+ 
++from .features import DEFAULT_FEATURE_SET, FEATURE_SETS, extract_features, validate_feature_set
+ from .thresholds import (
+     DEFAULT_LOWER_THRESHOLD,
+     DEFAULT_UPPER_THRESHOLD,
+@@ -65,15 +66,28 @@ class EarlyExitMVIForest:
+     baseline traffic before using the scores for production routing.
+     """
+ 
++    # Class-level default so models pickled before feature sets existed load as "v1".
++    feature_set: str = DEFAULT_FEATURE_SET
++
+     def __init__(
+         self,
+         random_state: int | None = None,
+         *,
+-        n_features: int = 4,
++        n_features: int | None = None,
+         contamination: str | float = "auto",
++        feature_set: str = DEFAULT_FEATURE_SET,
+     ) -> None:
++        validate_feature_set(feature_set)
++        if n_features is None:
++            n_features = len(FEATURE_SETS[feature_set])
+         if n_features < 1:
+             raise ValueError("n_features must be positive")
++        if feature_set != DEFAULT_FEATURE_SET and n_features != len(FEATURE_SETS[feature_set]):
++            raise ValueError(
++                f"feature set {feature_set!r} has {len(FEATURE_SETS[feature_set])} features, "
++                f"not {n_features}"
++            )
++        self.feature_set = feature_set
+         self.random_state = random_state
+         self.n_features = n_features
+         self.contamination = contamination
+@@ -86,6 +100,10 @@ class EarlyExitMVIForest:
+         rng = np.random.default_rng(random_state)
+         self.model.fit(rng.standard_normal(size=(256, n_features)))
+ 
++    def extract_features(self, flow: Mapping[str, object]) -> np.ndarray:
++        """Feature vector for ``flow`` using the feature set this model was built with."""
++        return extract_features(flow, self.feature_set)
++
+     def fit(self, feature_matrix: np.ndarray) -> Self:
+         """Train on a finite 2-D feature matrix and return this instance."""
+         samples = np.asarray(feature_matrix, dtype=np.float64)
+diff --git a/soc_agent/features.py b/soc_agent/features.py
+new file mode 100644
+index 0000000..69786a6
+--- /dev/null
++++ b/soc_agent/features.py
+@@ -0,0 +1,128 @@
++"""Selectable Fast Brain feature sets.
++
++``v1`` is the original four-feature set (``soc_agent.fast_brain.features_from_flow``) and
++remains the default everywhere. ``v2`` extends it using ONLY fields of the canonical flow
++schema that the Go ingester already archives (``packets``, ``bytes``, ``duration_ms``,
++``src_port``, ``dst_port``, ``protocol``). Nothing is inferred or invented: a flow that
++lacks a field a feature set needs is rejected with a ValueError.
++
++A trained model records which feature set it was fitted with (``EarlyExitMVIForest.feature_set``)
++and scoring always uses that set, so train-time and score-time features cannot diverge.
++Models pickled before this module existed have no such attribute and are treated as ``v1``.
++
++This module must not import ``soc_agent.fast_brain`` at import time (fast_brain imports it).
++"""
++
++from __future__ import annotations
++
++import math
++from collections.abc import Mapping
++
++import numpy as np
++
++V1_FEATURES: tuple[str, ...] = (
++    "log1p_packets",
++    "log1p_bytes",
++    "log1p_duration_ms",
++    "log1p_mean_packet_size",
++)
++
++V2_FEATURES: tuple[str, ...] = V1_FEATURES + (
++    "log1p_packets_per_s",
++    "log1p_bytes_per_s",
++    "dst_port_well_known",
++    "src_port_unprivileged",
++    "proto_tcp",
++    "proto_udp",
++    "proto_icmp",
++)
++
++FEATURE_SETS: dict[str, tuple[str, ...]] = {"v1": V1_FEATURES, "v2": V2_FEATURES}
++DEFAULT_FEATURE_SET = "v1"
++
++# IANA protocol numbers for the three protocols given their own indicator; everything else
++# (including unknown names) leaves all three indicators at zero ("other").
++_PROTO_NUMBERS = {1: "icmp", 6: "tcp", 17: "udp"}
++_PROTO_NAMES = {"icmp", "tcp", "udp"}
++# Duration floor used only for rate features, so single-packet (0 ms) flows do not divide by 0.
++_MIN_RATE_DURATION_MS = 1.0
++
++
++def validate_feature_set(name: str) -> str:
++    if name not in FEATURE_SETS:
++        raise ValueError(
++            f"unknown feature set {name!r}; choose one of {', '.join(sorted(FEATURE_SETS))}"
++        )
++    return name
++
++
++def _port(flow: Mapping[str, object], key: str) -> int:
++    if key not in flow or flow[key] is None:
++        raise ValueError(f"feature set v2 requires {key}; this flow has none")
++    value = flow[key]
++    if isinstance(value, bool):
++        raise ValueError(f"{key} must be an integer port, got {value!r}")
++    try:
++        number = float(value)  # type: ignore[arg-type]
++    except (TypeError, ValueError) as exc:
++        raise ValueError(f"{key} must be an integer port, got {value!r}") from exc
++    if not math.isfinite(number) or number != int(number) or not 0 <= number <= 65535:
++        raise ValueError(f"{key} must be an integer in 0..65535, got {value!r}")
++    return int(number)
++
++
++def _protocol_name(flow: Mapping[str, object]) -> str:
++    value = flow.get("protocol")
++    if value is None or (isinstance(value, str) and not value.strip()):
++        raise ValueError("feature set v2 requires protocol; this flow has none")
++    if isinstance(value, bool):
++        raise ValueError(f"protocol must be a name or IANA number, got {value!r}")
++    if isinstance(value, (int, float)):
++        return _PROTO_NUMBERS.get(int(value), "other")
++    text = str(value).strip().lower()
++    if text.isdigit():
++        return _PROTO_NUMBERS.get(int(text), "other")
++    return text if text in _PROTO_NAMES else "other"
++
++
++def features_v2(flow: Mapping[str, object]) -> np.ndarray:
++    """Eleven features: the V1 four plus rates, port classes and protocol indicators."""
++    from .fast_brain import features_from_flow  # lazy: avoids an import cycle
++
++    base = features_from_flow(flow)  # raises ValueError on bad packets/bytes/duration
++    # base already validated these fields as finite and non-negative
++    packets = float(flow["packets"] if "packets" in flow else flow["packet_count"])  # type: ignore[arg-type]
++    byte_count = float(flow["bytes"] if "bytes" in flow else flow["byte_count"])  # type: ignore[arg-type]
++    duration_ms = float(flow.get("duration_ms", 0.0))  # type: ignore[arg-type]
++    seconds = max(duration_ms, _MIN_RATE_DURATION_MS) / 1000.0
++
++    dst_port = _port(flow, "dst_port")
++    src_port = _port(flow, "src_port")
++    proto = _protocol_name(flow)
++
++    extra = np.array(
++        [
++            math.log1p(packets / seconds),
++            math.log1p(byte_count / seconds),
++            1.0 if dst_port < 1024 else 0.0,
++            1.0 if src_port >= 1024 else 0.0,
++            1.0 if proto == "tcp" else 0.0,
++            1.0 if proto == "udp" else 0.0,
++            1.0 if proto == "icmp" else 0.0,
++        ],
++        dtype=np.float64,
++    )
++    vector = np.concatenate([base, extra])
++    if not np.isfinite(vector).all():
++        raise ValueError("feature vector contains a non-finite value")
++    return vector
++
++
++def extract_features(flow: Mapping[str, object], feature_set: str = DEFAULT_FEATURE_SET) -> np.ndarray:
++    """Feature vector of ``flow`` under the named feature set."""
++    validate_feature_set(feature_set)
++    if feature_set == "v1":
++        from .fast_brain import features_from_flow  # lazy: avoids an import cycle
++
++        return features_from_flow(flow)
++    return features_v2(flow)
+diff --git a/soc_agent/incidents.py b/soc_agent/incidents.py
+new file mode 100644
+index 0000000..a844ba6
+--- /dev/null
++++ b/soc_agent/incidents.py
+@@ -0,0 +1,403 @@
++"""Incident records shared by every route, and their SQLite store.
++
++One record format covers all three outcomes so a dashboard (or any other consumer) needs a
++single reader:
++
++* ``fast_track``  - a FAST_TRACK flow, recorded as a HIGH-priority incident with NO LLM call;
++* ``slow_brain``  - a per-source incident analysed by the Layer 4 agent (``soc_result`` holds
++                    its verbatim output);
++* ``untimed``     - a SLOW_BRAIN flow whose timestamp is missing or surrogate. The verifier
++                    depends on real event time, so these are escalated to an analyst without
++                    an LLM call instead of being verified against an invented time.
++
++The store is separate from the Go ingester's ``forensics_archive.db`` (which Go owns).
++Records are unsigned: see docs/SECURITY_AND_LIMITATIONS.md ("Provenance").
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import sqlite3
++from contextlib import closing
++from dataclasses import dataclass, field
++from datetime import datetime, timezone
++from pathlib import Path
++from typing import Any, Iterable, Mapping
++
++RECORD_VERSION = 1
++
++KIND_FAST_TRACK = "fast_track"
++KIND_SLOW_BRAIN = "slow_brain"
++KIND_UNTIMED = "untimed"
++
++PRIORITY_HIGH = "HIGH"
++PRIORITY_MEDIUM = "MEDIUM"
++
++DISP_FAST_TRACK = "FAST_TRACK_RECORDED"
++DISP_UNTIMED = "UNTIMED_ESCALATED"
++DISP_PROPOSE = "SLOW_BRAIN_PROPOSE"
++DISP_ESCALATE = "SLOW_BRAIN_ESCALATE"
++DISP_CLOSE = "SLOW_BRAIN_CLOSE"
++DISP_ERROR = "SLOW_BRAIN_ERROR"
++
++_SCHEMA = """
++CREATE TABLE IF NOT EXISTS incidents (
++    incident_id   TEXT PRIMARY KEY,
++    record_version INTEGER NOT NULL,
++    kind          TEXT NOT NULL,
++    recorded_at   TEXT NOT NULL,
++    priority      TEXT NOT NULL,
++    disposition   TEXT NOT NULL,
++    llm_called    INTEGER NOT NULL,
++    status        TEXT NOT NULL DEFAULT 'open',
++    src           TEXT,
++    dst           TEXT,
++    route         TEXT,
++    s_score       REAL,
++    first_flow_ts TEXT,
++    ts_kind       TEXT,
++    ts_original   TEXT,
++    flow_ids      TEXT NOT NULL,
++    reasons       TEXT NOT NULL,
++    evidence      TEXT NOT NULL,
++    mitre         TEXT NOT NULL,
++    soc_result    TEXT,
++    model_sha256  TEXT,
++    feature_set   TEXT,
++    thresholds    TEXT
++);
++CREATE INDEX IF NOT EXISTS idx_incidents_kind ON incidents(kind);
++CREATE INDEX IF NOT EXISTS idx_incidents_priority ON incidents(priority);
++CREATE INDEX IF NOT EXISTS idx_incidents_src ON incidents(src);
++"""
++
++_JSON_COLUMNS = ("flow_ids", "reasons", "evidence", "mitre", "soc_result", "thresholds")
++
++
++def utc_now() -> str:
++    return datetime.now(timezone.utc).isoformat(timespec="seconds")
++
++
++def _digest(*parts: object) -> str:
++    return hashlib.sha1("|".join(map(str, parts)).encode("utf-8")).hexdigest()[:16]
++
++
++@dataclass
++class Incident:
++    incident_id: str
++    kind: str
++    priority: str
++    disposition: str
++    llm_called: bool
++    flow_ids: list[str]
++    reasons: list[str]
++    recorded_at: str = field(default_factory=utc_now)
++    status: str = "open"
++    src: str | None = None
++    dst: str | None = None
++    route: str | None = None
++    s_score: float | None = None
++    first_flow_ts: str | None = None
++    ts_kind: str | None = None
++    ts_original: str | None = None
++    evidence: dict[str, Any] = field(default_factory=dict)
++    mitre: list[dict[str, Any]] = field(default_factory=list)
++    soc_result: dict[str, Any] | None = None
++    model_sha256: str | None = None
++    feature_set: str | None = None
++    thresholds: dict[str, Any] | None = None
++    record_version: int = RECORD_VERSION
++
++    def to_dict(self) -> dict[str, Any]:
++        return dict(self.__dict__)
++
++
++def _flow_ts_fields(flow: Mapping[str, Any]) -> tuple[str | None, str | None, str | None]:
++    stamp = flow.get("timestamp", flow.get("ts"))
++    return (
++        str(stamp) if stamp not in (None, "") else None,
++        str(flow.get("ts_kind") or ("absolute" if stamp else "missing")),
++        None if flow.get("ts_original") in (None, "") else str(flow["ts_original"]),
++    )
++
++
++def _src_dst(flow: Mapping[str, Any]) -> tuple[str | None, str | None]:
++    src = flow.get("src_ip", flow.get("source_ip"))
++    dst = flow.get("dst_ip", flow.get("dest_ip"))
++    return (None if src is None else str(src), None if dst is None else str(dst))
++
++
++def fast_track_incident(
++    flow: Mapping[str, Any],
++    *,
++    model_sha256: str | None = None,
++    feature_set: str | None = None,
++    thresholds: Mapping[str, Any] | None = None,
++) -> Incident:
++    """HIGH-priority incident for one FAST_TRACK flow. No LLM is involved, by design."""
++    if flow.get("route") != "FAST_TRACK":
++        raise ValueError(f"flow route is {flow.get('route')!r}, expected 'FAST_TRACK'")
++    flow_id = flow.get("flow_id")
++    if not isinstance(flow_id, str) or not flow_id.strip():
++        raise ValueError("flow_id must be a non-empty string")
++    score = flow.get("s_score")
++    ts, ts_kind, ts_original = _flow_ts_fields(flow)
++    src, dst = _src_dst(flow)
++    reasons = ["fast_brain_score_above_upper_threshold", "no_llm_call_by_design"]
++    if ts_kind != "absolute":
++        reasons.append(f"timestamp_{ts_kind}")
++    return Incident(
++        incident_id=f"FT-{_digest('fast_track', flow_id)}",
++        kind=KIND_FAST_TRACK,
++        priority=PRIORITY_HIGH,
++        disposition=DISP_FAST_TRACK,
++        llm_called=False,
++        flow_ids=[flow_id],
++        reasons=reasons,
++        src=src,
++        dst=dst,
++        route="FAST_TRACK",
++        s_score=None if score is None else float(score),
++        first_flow_ts=ts,
++        ts_kind=ts_kind,
++        ts_original=ts_original,
++        evidence={"flows": [dict(flow)]},
++        mitre=[],
++        model_sha256=model_sha256,
++        feature_set=feature_set,
++        thresholds=None if thresholds is None else dict(thresholds),
++    )
++
++
++def untimed_incident(
++    flow: Mapping[str, Any],
++    *,
++    model_sha256: str | None = None,
++    feature_set: str | None = None,
++    thresholds: Mapping[str, Any] | None = None,
++) -> Incident:
++    """A SLOW_BRAIN flow that cannot be verified because its timestamp is not real event time."""
++    flow_id = flow.get("flow_id")
++    if not isinstance(flow_id, str) or not flow_id.strip():
++        raise ValueError("flow_id must be a non-empty string")
++    score = flow.get("s_score")
++    ts, ts_kind, ts_original = _flow_ts_fields(flow)
++    src, dst = _src_dst(flow)
++    return Incident(
++        incident_id=f"UT-{_digest('untimed', flow_id)}",
++        kind=KIND_UNTIMED,
++        priority=PRIORITY_MEDIUM,
++        disposition=DISP_UNTIMED,
++        llm_called=False,
++        flow_ids=[flow_id],
++        reasons=[
++            f"timestamp_{ts_kind}_excluded_from_verifier",
++            "analyst_review_required",
++            "no_llm_call",
++        ],
++        src=src,
++        dst=dst,
++        route=str(flow.get("route") or "SLOW_BRAIN"),
++        s_score=None if score is None else float(score),
++        first_flow_ts=ts,
++        ts_kind=ts_kind,
++        ts_original=ts_original,
++        evidence={"flows": [dict(flow)]},
++        mitre=[],
++        model_sha256=model_sha256,
++        feature_set=feature_set,
++        thresholds=None if thresholds is None else dict(thresholds),
++    )
++
++
++def _disposition_for(soc_result: Mapping[str, Any]) -> str:
++    outcome = soc_result.get("outcome")
++    return {
++        "PROPOSE": DISP_PROPOSE,
++        "ESCALATE": DISP_ESCALATE,
++        "CLOSE": DISP_CLOSE,
++    }.get(str(outcome), DISP_ERROR)
++
++
++def slow_brain_incident(
++    *,
++    src: str,
++    events: Iterable[Mapping[str, Any]],
++    logs: Mapping[str, str],
++    soc_result: Mapping[str, Any],
++    mitre: Iterable[Mapping[str, Any]] = (),
++    flows: Iterable[Mapping[str, Any]] = (),
++    model_sha256: str | None = None,
++    feature_set: str | None = None,
++    thresholds: Mapping[str, Any] | None = None,
++) -> Incident:
++    """Incident for one source host analysed by the Layer 4 agent (verbatim ``soc_result``)."""
++    event_list = [dict(e) for e in events]
++    flow_ids = [str(e["event_id"]) for e in event_list if not str(e["event_id"]).startswith("BASE-")]
++    disposition = _disposition_for(soc_result)
++    if disposition == DISP_PROPOSE:
++        priority = PRIORITY_HIGH
++    elif disposition == DISP_ESCALATE:
++        priority = PRIORITY_MEDIUM
++    elif disposition == DISP_CLOSE:
++        priority = "LOW"
++    else:
++        priority = PRIORITY_MEDIUM  # an analysis that failed is never treated as benign
++    flow_list = [dict(f) for f in flows]
++    scores = [f["s_score"] for f in flow_list if isinstance(f.get("s_score"), (int, float))]
++    stamps = sorted(str(e["ts"]) for e in event_list if e.get("ts"))
++    return Incident(
++        incident_id=f"SB-{_digest('slow_brain', src, *sorted(flow_ids))}",
++        kind=KIND_SLOW_BRAIN,
++        priority=priority,
++        disposition=disposition,
++        llm_called=soc_result.get("status") not in (None, "CLI_ERROR", "INVALID_FLOW"),
++        flow_ids=flow_ids,
++        reasons=[str(r) for r in soc_result.get("reasons", [])],
++        src=src,
++        route="SLOW_BRAIN",
++        s_score=max(scores) if scores else None,
++        first_flow_ts=stamps[0] if stamps else None,
++        ts_kind="absolute",
++        evidence={"events": event_list, "logs": {k: v for k, v in logs.items() if k in {e["event_id"] for e in event_list}}},
++        mitre=[dict(m) for m in mitre],
++        soc_result=dict(soc_result),
++        model_sha256=model_sha256,
++        feature_set=feature_set,
++        thresholds=None if thresholds is None else dict(thresholds),
++    )
++
++
++class IncidentStore:
++    """SQLite-backed incident table (stdlib only)."""
++
++    def __init__(self, path: str | Path) -> None:
++        self.path = Path(path)
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        with closing(self._connect()) as conn:
++            conn.executescript(_SCHEMA)
++
++    def _connect(self) -> sqlite3.Connection:
++        conn = sqlite3.connect(str(self.path), timeout=5.0)
++        conn.row_factory = sqlite3.Row
++        conn.execute("PRAGMA journal_mode=WAL")
++        return conn
++
++    def save(self, incident: Incident, *, replace: bool = False) -> bool:
++        """Insert an incident. Returns True if a row was written.
++
++        Fast-track and untimed records are idempotent (``replace=False``: an existing id is
++        left untouched). Slow Brain records pass ``replace=True`` so a re-analysis supersedes.
++        """
++        row = incident.to_dict()
++        row["llm_called"] = int(row["llm_called"])
++        for column in _JSON_COLUMNS:
++            row[column] = None if row[column] is None else json.dumps(row[column], allow_nan=False, default=str)
++        columns = list(row)
++        verb = "INSERT OR REPLACE" if replace else "INSERT OR IGNORE"
++        sql = f"{verb} INTO incidents ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})"
++        with closing(self._connect()) as conn, conn:
++            cursor = conn.execute(sql, [row[c] for c in columns])
++            return cursor.rowcount == 1
++
++    @staticmethod
++    def _decode(row: sqlite3.Row) -> dict[str, Any]:
++        data = dict(row)
++        for column in _JSON_COLUMNS:
++            if data.get(column) is not None:
++                data[column] = json.loads(data[column])
++        data["llm_called"] = bool(data["llm_called"])
++        return data
++
++    def get(self, incident_id: str) -> dict[str, Any] | None:
++        with closing(self._connect()) as conn:
++            row = conn.execute("SELECT * FROM incidents WHERE incident_id = ?", (incident_id,)).fetchone()
++        return None if row is None else self._decode(row)
++
++    def list(self, *, kind: str | None = None, priority: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
++        clauses, params = [], []
++        if kind:
++            clauses.append("kind = ?")
++            params.append(kind)
++        if priority:
++            clauses.append("priority = ?")
++            params.append(priority)
++        sql = "SELECT * FROM incidents"
++        if clauses:
++            sql += " WHERE " + " AND ".join(clauses)
++        sql += " ORDER BY recorded_at DESC, incident_id"
++        if limit:
++            sql += " LIMIT ?"
++            params.append(limit)
++        with closing(self._connect()) as conn:
++            return [self._decode(r) for r in conn.execute(sql, params)]
++
++    def counts(self) -> dict[str, dict[str, int]]:
++        out: dict[str, dict[str, int]] = {}
++        with closing(self._connect()) as conn:
++            for column in ("kind", "priority", "disposition", "status"):
++                out[column] = {
++                    r[0]: r[1] for r in conn.execute(f"SELECT {column}, COUNT(*) FROM incidents GROUP BY {column}")
++                }
++        return out
++
++
++def run_context_from_model(model_path: str | Path, thresholds_path: str | Path | None = None) -> dict[str, Any]:
++    """Model identity for incident records: fingerprint, feature set and thresholds in force.
++
++    Loads the model with joblib (pickle): only pass a model file you trust.
++    """
++    import joblib
++
++    from .fast_brain import EarlyExitMVIForest
++    from .thresholds import model_fingerprint, resolve_routing_thresholds
++
++    forest = joblib.load(model_path)
++    if not isinstance(forest, EarlyExitMVIForest):
++        raise ValueError("model file does not contain an EarlyExitMVIForest")
++    routing = resolve_routing_thresholds(thresholds_path, model_path)
++    return {
++        "model_sha256": model_fingerprint(model_path),
++        "feature_set": forest.feature_set,
++        "thresholds": {"lower": routing.lower, "upper": routing.upper, "source": routing.source},
++    }
++
++
++def record_scored_file(
++    scored_path: str | Path,
++    store: IncidentStore,
++    context: Mapping[str, Any] | None = None,
++    *,
++    include_untimed: bool = True,
++) -> dict[str, int]:
++    """Record FAST_TRACK flows (and, optionally, untimed SLOW_BRAIN flows) from a scored JSONL.
++
++    FAST_TRACK flows become HIGH-priority incidents with no LLM call. Re-running is idempotent.
++    Returns counts: fast_track, untimed, existing (already recorded), invalid.
++    """
++    ctx = dict(context or {})
++    counts = {"fast_track": 0, "untimed": 0, "existing": 0, "invalid": 0}
++    with open(scored_path, encoding="utf-8") as source:
++        for line in source:
++            if not line.strip():
++                continue
++            try:
++                flow = json.loads(line)
++                if not isinstance(flow, dict):
++                    raise ValueError("row is not an object")
++                route = flow.get("route")
++                if route == "FAST_TRACK":
++                    incident, key = fast_track_incident(flow, **ctx), "fast_track"
++                elif include_untimed and route == "SLOW_BRAIN" and flow.get("ts_kind", "absolute") != "absolute":
++                    incident, key = untimed_incident(flow, **ctx), "untimed"
++                else:
++                    continue
++            except (json.JSONDecodeError, ValueError):
++                counts["invalid"] += 1
++                continue
++            if store.save(incident):
++                counts[key] += 1
++            else:
++                counts["existing"] += 1
++    return counts
+-- 
+2.55.0.windows.3
+

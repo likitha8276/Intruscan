@@ -9,6 +9,7 @@ from typing import Self
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
+from .features import DEFAULT_FEATURE_SET, FEATURE_SETS, extract_features, validate_feature_set
 from .thresholds import (
     DEFAULT_LOWER_THRESHOLD,
     DEFAULT_UPPER_THRESHOLD,
@@ -65,15 +66,28 @@ class EarlyExitMVIForest:
     baseline traffic before using the scores for production routing.
     """
 
+    # Class-level default so models pickled before feature sets existed load as "v1".
+    feature_set: str = DEFAULT_FEATURE_SET
+
     def __init__(
         self,
         random_state: int | None = None,
         *,
-        n_features: int = 4,
+        n_features: int | None = None,
         contamination: str | float = "auto",
+        feature_set: str = DEFAULT_FEATURE_SET,
     ) -> None:
+        validate_feature_set(feature_set)
+        if n_features is None:
+            n_features = len(FEATURE_SETS[feature_set])
         if n_features < 1:
             raise ValueError("n_features must be positive")
+        if feature_set != DEFAULT_FEATURE_SET and n_features != len(FEATURE_SETS[feature_set]):
+            raise ValueError(
+                f"feature set {feature_set!r} has {len(FEATURE_SETS[feature_set])} features, "
+                f"not {n_features}"
+            )
+        self.feature_set = feature_set
         self.random_state = random_state
         self.n_features = n_features
         self.contamination = contamination
@@ -85,6 +99,10 @@ class EarlyExitMVIForest:
         )
         rng = np.random.default_rng(random_state)
         self.model.fit(rng.standard_normal(size=(256, n_features)))
+
+    def extract_features(self, flow: Mapping[str, object]) -> np.ndarray:
+        """Feature vector for ``flow`` using the feature set this model was built with."""
+        return extract_features(flow, self.feature_set)
 
     def fit(self, feature_matrix: np.ndarray) -> Self:
         """Train on a finite 2-D feature matrix and return this instance."""
