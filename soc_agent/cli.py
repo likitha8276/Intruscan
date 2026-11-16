@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--config",
         default="D_full",
-        choices=["A_raw", "B_hardened", "C_graph_binary", "E_abstain_only", "D_full"],
+        choices=["A_raw", "B_hardened", "C_graph_binary", "E_abstain_only", "D_full", "D_full_rel"],
     )
     common.add_argument(
         "--llm",
