@@ -78,9 +78,9 @@ scoring pipeline is documented in [ingestion/README.md](../ingestion/README.md).
 
 It archives canonical flow records in SQLite, trains on records labeled
 
-`benign`, and emits anomaly scores and route decisions. It does not require
+`benign`, and emits anomaly scores and route decisions. It uses neither
 
-Kafka and is separate from the Layer 4 graph-event JSONL consumed by
+Kafka nor PCAP capture (input is local JSONL files) and is separate from the Layer 4 graph-event JSONL consumed by
 
 `soc_agent.cli`.
 

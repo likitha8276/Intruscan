@@ -1,8 +1,8 @@
 Local Layer 1 → Layer 2 pipeline
-Layer 1 reads NetFlow/IPFIX-derived flow records from JSONL and archives the
+Layer 1 reads NetFlow-style flow records from local JSONL files (there is no live IPFIX collector) and archives the
 normalized fields plus the exact input JSON in SQLite. A channel-based worker
 pool archives records in transactions of up to 500. Rows are idempotent by
-flow_id. Kafka is intentionally not part of this local integration.
+flow_id. Kafka and PCAP capture are not used; Ollama is not used either (LLM calls go to Groq, with Gemini as fallback).
 
 The SQLite connection uses WAL, NORMAL synchronous mode, and a busy timeout.
 No ORM is used.
