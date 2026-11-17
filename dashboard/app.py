@@ -1,4 +1,3 @@
-
 """INTRUSCAN SOC dashboard (Streamlit)."""
 
 from __future__ import annotations
@@ -61,6 +60,12 @@ with st.sidebar:
 # --------------------------------------------------
 
 st.subheader("Upload dataset and run analysis")
+st.caption(
+    "The upload pipeline below uses the CICIDS2017 parser and Fast Brain model. "
+    "UGR'16 results are viewed by pointing the sidebar paths (or "
+    "INTRUSCAN_SCORED / INTRUSCAN_INCIDENT_DB) at scored flows and an incident "
+    "store produced with fast_brain_ugr16_v2 and the handoff tools."
+)
 
 uploaded_file = st.file_uploader(
     "Upload CICIDS2017 CSV",
@@ -73,6 +78,8 @@ if st.button(
     type="primary",
     disabled=uploaded_file is None,
 ):
+    # Upload pipeline is CICIDS2017-specific (parser + model). UGR'16 uses
+    # data/models/fast_brain_ugr16_v2.joblib via the CLI, not this button.
     model_path = ROOT / "data" / "models" / "fast_brain_cicids2017.joblib"
     scored_output = Path(scored_path)
     incident_db = Path(db_path)
