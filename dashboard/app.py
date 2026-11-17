@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 import subprocess
@@ -59,38 +60,82 @@ with st.sidebar:
 # DATASET UPLOAD AND PIPELINE
 # --------------------------------------------------
 
+CICIDS_MODEL = ROOT / "data" / "models" / "fast_brain_cicids2017.joblib"
+UGR16_MODEL = ROOT / "data" / "models" / "fast_brain_ugr16_v3.joblib"
+UGR16_BASELINE = ROOT / "data" / "raw" / "ugr16_train.jsonl"
+
 st.subheader("Upload dataset and run analysis")
-st.caption(
-    "The upload pipeline below uses the CICIDS2017 parser and Fast Brain model. "
-    "UGR'16 results are viewed by pointing the sidebar paths (or "
-    "INTRUSCAN_SCORED / INTRUSCAN_INCIDENT_DB) at scored flows and an incident "
-    "store produced with fast_brain_ugr16_v2 and the handoff tools."
+
+dataset = st.radio(
+    "Dataset type",
+    ["CICIDS2017", "UGR'16"],
+    horizontal=True,
 )
+is_ugr = dataset == "UGR'16"
+
+if is_ugr:
+    st.caption(
+        "UGR'16: upload an official headerless 13-column labelled CSV (a small "
+        "sample, not a whole weekly file). It is converted with "
+        "tools/parse_ugr16_native.py and scored with fast_brain_ugr16_v3. "
+        "Routing uses the approved v3 thresholds from soc_agent/thresholds.json "
+        "(lower 0.596, upper 0.635), bound to the v3 model."
+    )
+else:
+    st.caption(
+        "CICIDS2017: uses tools/parse_cicids2017.py and "
+        "fast_brain_cicids2017.joblib."
+    )
 
 uploaded_file = st.file_uploader(
-    "Upload CICIDS2017 CSV",
+    f"Upload {dataset} CSV",
     type=["csv"],
-    help="Upload a CICIDS2017 flow CSV file.",
+    help=(
+        "Headerless official UGR'16 CSV (13 columns)."
+        if is_ugr
+        else "Upload a CICIDS2017 flow CSV file."
+    ),
+)
+
+max_events = 12
+if is_ugr:
+    max_events = st.number_input(
+        "Max LLM events (one LLM call per source; rate limits apply)",
+        min_value=1,
+        max_value=100,
+        value=12,
+        step=1,
+    )
+
+confirm_write = st.checkbox(
+    "I understand this run writes to the sidebar paths "
+    f"(`{scored_path}` and `{db_path}`) and may replace or extend them."
 )
 
 if st.button(
     "Run Intruscan analysis",
     type="primary",
-    disabled=uploaded_file is None,
+    disabled=uploaded_file is None or not confirm_write,
 ):
-    # Upload pipeline is CICIDS2017-specific (parser + model). UGR'16 uses
-    # data/models/fast_brain_ugr16_v2.joblib via the CLI, not this button.
-    model_path = ROOT / "data" / "models" / "fast_brain_cicids2017.joblib"
+    model_path = UGR16_MODEL if is_ugr else CICIDS_MODEL
     scored_output = Path(scored_path)
     incident_db = Path(db_path)
-    rag_output = ROOT / "rag_soc_alerts.jsonl"
+    rag_output = (
+        ROOT / "smoke" / "ugr16_upload_alerts.jsonl"
+        if is_ugr
+        else ROOT / "rag_soc_alerts.jsonl"
+    )
 
     if not model_path.is_file():
         st.error(f"Trained model not found: {model_path}")
 
+    elif is_ugr and not UGR16_BASELINE.is_file():
+        st.error(f"UGR'16 baseline file not found: {UGR16_BASELINE}")
+
     else:
         scored_output.parent.mkdir(parents=True, exist_ok=True)
         incident_db.parent.mkdir(parents=True, exist_ok=True)
+        rag_output.parent.mkdir(parents=True, exist_ok=True)
 
         def run_step(label, command):
             st.write(f"**{label}**")
@@ -125,15 +170,29 @@ if st.button(
                 with st.spinner("Processing uploaded dataset..."):
 
                     # STEP 1: CSV PARSING
-                    run_step(
-                        "Step 1: Parsing CSV",
-                        [
+                    if is_ugr:
+                        source_name = re.sub(
+                            r"[^A-Za-z0-9_.-]+",
+                            "_",
+                            Path(uploaded_file.name).stem,
+                        ) or "ugr16_upload"
+                        parse_command = [
+                            sys.executable,
+                            "tools/parse_ugr16_native.py",
+                            str(csv_path),
+                            str(parsed_path),
+                            "--source-name",
+                            source_name,
+                        ]
+                    else:
+                        parse_command = [
                             sys.executable,
                             "tools/parse_cicids2017.py",
                             str(csv_path),
                             str(parsed_path),
-                        ],
-                    )
+                        ]
+
+                    run_step("Step 1: Parsing CSV", parse_command)
 
                     # STEP 2: FAST BRAIN
                     run_step(
@@ -153,25 +212,43 @@ if st.button(
                     )
 
                     # STEP 3: RAG AND AGENTIC SLOW BRAIN
+                    handoff_command = [
+                        sys.executable,
+                        "-m",
+                        "rag.handoff",
+                        "--scored",
+                        str(scored_output),
+                        "--output",
+                        str(rag_output),
+                        "--incident-db",
+                        str(incident_db),
+                        "--fast-brain-model",
+                        str(model_path),
+                        "--llm",
+                        "auto",
+                        "--model",
+                        "openai/gpt-oss-20b",
+                    ]
+
+                    if is_ugr:
+                        handoff_command += [
+                            "--chroma-path",
+                            str(ROOT / "smoke" / "chroma_pipe"),
+                            "--mitre",
+                            "seed",
+                            "--baseline-file",
+                            str(UGR16_BASELINE),
+                            "--baseline-label",
+                            "background",
+                            "--max-events",
+                            str(int(max_events)),
+                            "--timeout",
+                            "600",
+                        ]
+
                     run_step(
                         "Step 3: RAG / Slow Brain handoff",
-                        [
-                            sys.executable,
-                            "-m",
-                            "rag.handoff",
-                            "--scored",
-                            str(scored_output),
-                            "--output",
-                            str(rag_output),
-                            "--incident-db",
-                            str(incident_db),
-                            "--fast-brain-model",
-                            str(model_path),
-                            "--llm",
-                            "auto",
-                            "--model",
-                            "openai/gpt-oss-20b",
-                        ],
+                        handoff_command,
                     )
 
             st.success("Dataset processed successfully!")

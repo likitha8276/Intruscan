@@ -1,0 +1,186 @@
+[
+  {
+    "case_id": "clean_benign-000",
+    "config": "A_raw",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_requested_investigation"
+    ],
+    "parsed_ok": true,
+    "llm_ms": 4075.3036000023712,
+    "verify_ms": 0.0,
+    "prompt_tokens": 2709,
+    "completion_tokens": 607,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "clean_benign-000",
+    "config": "D_full",
+    "outcome": "CLOSE",
+    "reasons": [
+      "llm_closed"
+    ],
+    "parsed_ok": true,
+    "llm_ms": 2536.7605999999796,
+    "verify_ms": 0.8999999990919605,
+    "prompt_tokens": 1639,
+    "completion_tokens": 895,
+    "verdicts": [
+      "SUPPORTED"
+    ],
+    "gate_flags": []
+  },
+  {
+    "case_id": "clean_benign-001",
+    "config": "A_raw",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "bad_output_schema"
+    ],
+    "parsed_ok": false,
+    "llm_ms": 2650.3271000001405,
+    "verify_ms": 0.0,
+    "prompt_tokens": 2674,
+    "completion_tokens": 793,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "clean_benign-001",
+    "config": "D_full",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_unavailable"
+    ],
+    "parsed_ok": false,
+    "llm_ms": 12879.858399999648,
+    "verify_ms": 0.0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "clean_benign-002",
+    "config": "A_raw",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_unavailable"
+    ],
+    "parsed_ok": false,
+    "llm_ms": 131993.2762999997,
+    "verify_ms": 0.0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "clean_benign-002",
+    "config": "D_full",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_requested_investigation"
+    ],
+    "parsed_ok": true,
+    "llm_ms": 3151.154099999985,
+    "verify_ms": 1.3002999985474162,
+    "prompt_tokens": 2150,
+    "completion_tokens": 1069,
+    "verdicts": [
+      "SUPPORTED"
+    ],
+    "gate_flags": []
+  },
+  {
+    "case_id": "benign_hardneg-000",
+    "config": "A_raw",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_requested_investigation"
+    ],
+    "parsed_ok": true,
+    "llm_ms": 2231.540799999493,
+    "verify_ms": 0.0,
+    "prompt_tokens": 2893,
+    "completion_tokens": 1016,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "benign_hardneg-000",
+    "config": "D_full",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_unavailable"
+    ],
+    "parsed_ok": false,
+    "llm_ms": 12064.387599999463,
+    "verify_ms": 0.0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "benign_hardneg-001",
+    "config": "A_raw",
+    "outcome": "CLOSE",
+    "reasons": [
+      "llm_closed"
+    ],
+    "parsed_ok": true,
+    "llm_ms": 2858.6677000021155,
+    "verify_ms": 0.0,
+    "prompt_tokens": 2927,
+    "completion_tokens": 657,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "benign_hardneg-001",
+    "config": "D_full",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_unavailable"
+    ],
+    "parsed_ok": false,
+    "llm_ms": 12469.223299998703,
+    "verify_ms": 0.0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "benign_hardneg-002",
+    "config": "A_raw",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_unavailable"
+    ],
+    "parsed_ok": false,
+    "llm_ms": 12277.471500001411,
+    "verify_ms": 0.0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "benign_hardneg-002",
+    "config": "D_full",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_unavailable"
+    ],
+    "parsed_ok": false,
+    "llm_ms": 3354.3538999983866,
+    "verify_ms": 0.0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "verdicts": [],
+    "gate_flags": []
+  }
+]

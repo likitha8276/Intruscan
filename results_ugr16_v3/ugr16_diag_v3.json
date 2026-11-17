@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "status": "candidate",
+  "lower_threshold": 0.596033,
+  "upper_threshold": 0.635351,
+  "model_sha256": "9f2e1e30eeea64e0defbae010cf24c3ada8077292143d6c5c1d14f7a2d0d1dfb",
+  "model_file": "fast_brain_ugr16_v3.joblib",
+  "created_at": "2026-11-17T10:45:11+00:00",
+  "benign_label": "background",
+  "calibration": {
+    "input_file": "ugr16_calib_diag.jsonl",
+    "input_sha256": "71e012166c8ae4bc5363170eebaad1fddd31117fa25bfa3af23240aa4f38d1d1",
+    "n_records": 399315,
+    "n_benign": 260994,
+    "n_attack": 138321,
+    "attack_label_counts": {
+      "dos": 78239,
+      "nerisbotnet": 15142,
+      "scan11": 7427,
+      "scan44": 37513
+    },
+    "min_benign_required": 100,
+    "min_attack_required": 20,
+    "benign_percentiles": {
+      "p90": 0.5624921230768358,
+      "p95": 0.5960235374500472,
+      "p99": 0.6353506617422754
+    },
+    "attack_percentiles": {
+      "p1": 0.4024773025610646,
+      "p5": 0.42281431820547816,
+      "p10": 0.5334543011139218
+    }
+  },
+  "selection": {
+    "lower": {
+      "method": "explicit_operating_point",
+      "selected_by": "user"
+    },
+    "upper": {
+      "method": "explicit_operating_point",
+      "selected_by": "user"
+    },
+    "objective": "Operating point supplied explicitly by the user; it must have been chosen without looking at test data."
+  },
+  "overlap": {
+    "benign_max": 0.7126015537995861,
+    "attack_min": 0.4024773025610646,
+    "ranges_overlap": true,
+    "benign_p95": 0.5960235374500472,
+    "attack_p5": 0.42281431820547816,
+    "percentiles_overlap": true,
+    "attack_fraction_at_or_below_benign_p95": 0.4402512995134506,
+    "requires_acknowledgement": true
+  },
+  "calibration_metrics": {
+    "lower_threshold": 0.596033,
+    "upper_threshold": 0.635351,
+    "n": 399315,
+    "n_benign": 260994,
+    "n_attack": 138321,
+    "prediction_rule": "CLEAR = predicted benign; SLOW_BRAIN or FAST_TRACK = escalated (predicted anomalous). Escalation is not a confirmed attack.",
+    "escalation": {
+      "tp": 77425,
+      "fp": 12648,
+      "tn": 248346,
+      "fn": 60896,
+      "precision": 0.8595805624326934,
+      "escalation_recall": 0.5597487004865495,
+      "specificity": 0.9515391158417434,
+      "f1": 0.6779950436526354,
+      "false_positive_rate": 0.048460884158256515
+    },
+    "fast_track": {
+      "attack_flows_fast_tracked": 7839,
+      "benign_flows_fast_tracked": 2603,
+      "fast_track_recall": 0.056672522610449604,
+      "fast_track_precision": 0.7507182532081976,
+      "benign_fast_track_rate": 0.009973409350406522
+    },
+    "routing_distribution": {
+      "all": {
+        "total": 399315,
+        "counts": {
+          "CLEAR": 309242,
+          "SLOW_BRAIN": 79631,
+          "FAST_TRACK": 10442
+        },
+        "percent": {
+          "CLEAR": 77.44312134530384,
+          "SLOW_BRAIN": 19.94190050461415,
+          "FAST_TRACK": 2.6149781500820155
+        }
+      },
+      "benign": {
+        "total": 260994,
+        "counts": {
+          "CLEAR": 248346,
+          "SLOW_BRAIN": 10045,
+          "FAST_TRACK": 2603
+        },
+        "percent": {
+          "CLEAR": 95.15391158417435,
+          "SLOW_BRAIN": 3.848747480784999,
+          "FAST_TRACK": 0.9973409350406522
+        }
+      },
+      "attack": {
+        "total": 138321,
+        "counts": {
+          "CLEAR": 60896,
+          "SLOW_BRAIN": 69586,
+          "FAST_TRACK": 7839
+        },
+        "percent": {
+          "CLEAR": 44.02512995134506,
+          "SLOW_BRAIN": 50.30761778760998,
+          "FAST_TRACK": 5.66725226104496
+        }
+      }
+    }
+  },
+  "evaluation": null,
+  "evaluation_runs": 0,
+  "notes": "CANDIDATE: not active and not approved. Anomaly scores are not probabilities. Calibration metrics are in-sample."
+}

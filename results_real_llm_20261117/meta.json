@@ -1,0 +1,16 @@
+{
+  "llm": "auto",
+  "model": "Groq (openai/gpt-oss-20b) -> Gemini (gemini-3.8-flash)",
+  "seed": 7,
+  "families": [
+    "inject_conceal_atomic",
+    "forgery_strong"
+  ],
+  "n_per_family": 1,
+  "tau": 0.7,
+  "configs": [
+    "A_raw",
+    "D_full"
+  ],
+  "purpose": "small real-provider integration pilot; not a benchmark"
+}

@@ -1,0 +1,20 @@
+UGR'16 Fast Brain threshold calibration, 2026-11-17
+Model: data/models/fast_brain_ugr16_v2.joblib (sha256 3ee27c77731e63e0...)
+Targets: benign escalation <= 5%, attack escalation recall >= 60%
+Benign label: background (not verified benign in UGR'16)
+
+Run 1: data/raw/ugr16_calib_bl.jsonl (sha256 e1555592af3ef9eb...)
+  260,994 benign, 190,681 attack (blacklist)
+  benign p90/p95/p99: 0.562780 / 0.604249 / 0.665971
+  attack p1/p5/p10: 0.408232 / 0.409249 / 0.427032
+  96.0% of attack flows score at or below the benign 95th percentile
+  Result: no candidate written (exit 2). Recall at the 5% benign cap: 0.0399
+
+Run 2: data/raw/ugr16_calib_diag.jsonl (sha256 71e012166c8ae4bc...)
+  260,994 benign, 138,321 attack (dos, scan11, scan44, nerisbotnet)
+  attack p1/p5/p10: 0.408232 / 0.438616 / 0.483496
+  99.7% of attack flows score at or below the benign 95th percentile
+  Result: no candidate written (exit 2). Recall at the 5% benign cap: 0.0028
+
+Conclusion: no threshold pair meets the targets. All UGR'16 runs use the
+default 0.40 / 0.85 thresholds. TEST data was not used for calibration.
