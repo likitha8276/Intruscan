@@ -377,6 +377,9 @@ class _FixedScoreModel:
     def __init__(self, value):
         self.value = value
 
+    def extract_features(self, flow):
+        return features_from_flow(flow)
+
     def compute_s_score(self, _features):
         return self.value
 
@@ -673,3 +676,20 @@ def test_approval_without_overlap_needs_no_acknowledgement(workflow_files, tmp_p
     out.write_text(json.dumps(document), encoding="utf-8")
 
     assert _approve(workflow_files, out, tmp_path / "approved.json") == 0
+
+
+class _V2StubModel:
+    """Stands in for a v2 model: it needs an 11-feature vector, not the v1 default."""
+
+    def extract_features(self, flow):
+        return [0.0] * 11
+
+    def compute_s_score(self, features):
+        assert len(features) == 11
+        return 0.5
+
+
+def test_score_flows_uses_the_models_own_feature_set(tmp_path):
+    path = _bad_file(tmp_path, [_GOOD])
+    scored = score_flows(_V2StubModel(), path, "benign")
+    assert scored.scores.tolist() == [0.5]
