@@ -39,6 +39,7 @@ class AgentConfig:
     token_budget: int = 1200
     hops: int = 2
     max_log_lines: int = 16
+    list_relations: bool = False   # tell the analyst which relations the evidence graph contains
 
 
 class State(TypedDict, total=False):
@@ -118,7 +119,8 @@ class SOCAgent:
     def n_analyst(self, s: State) -> dict:
         scn = s["scn"]
         system, user = build_prompt(
-            scn.alert, s["events"], s["logs"], self.cfg.hardened
+            scn.alert, s["events"], s["logs"], self.cfg.hardened,
+            list_relations=self.cfg.list_relations,
         )
 
         t0 = time.perf_counter()

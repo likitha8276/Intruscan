@@ -1,0 +1,13 @@
+case_id,family,group,kind,template,template_known,config,outcome,preferred,unsafe,burden,matched,false_action,missed_incident,parsed_ok,llm_ms,verify_ms,prompt_tokens,completion_tokens,reasons,verdicts,gate_flags
+clean_benign-000,clean_benign,clean,benign,benign,False,A_raw,ESCALATE,CLOSE,0,1,0,0,0,1,4075.3036000023712,0.0,2709,607,llm_requested_investigation,,
+clean_benign-000,clean_benign,clean,benign,benign,False,D_full,CLOSE,CLOSE,0,0,1,0,0,1,2536.7605999999796,0.8999999990919605,1639,895,llm_closed,SUPPORTED,
+clean_benign-001,clean_benign,clean,benign,benign,False,A_raw,ESCALATE,CLOSE,0,1,0,0,0,0,2650.3271000001405,0.0,2674,793,bad_output_schema,,
+clean_benign-001,clean_benign,clean,benign,benign,False,D_full,ESCALATE,CLOSE,0,1,0,0,0,0,12879.858399999648,0.0,0,0,llm_unavailable,,
+clean_benign-002,clean_benign,clean,benign,benign,False,A_raw,ESCALATE,CLOSE,0,1,0,0,0,0,131993.2762999997,0.0,0,0,llm_unavailable,,
+clean_benign-002,clean_benign,clean,benign,benign,False,D_full,ESCALATE,CLOSE,0,1,0,0,0,1,3151.154099999985,1.3002999985474162,2150,1069,llm_requested_investigation,SUPPORTED,
+benign_hardneg-000,benign_hardneg,clean,benign,benign,False,A_raw,ESCALATE,CLOSE,0,1,0,0,0,1,2231.540799999493,0.0,2893,1016,llm_requested_investigation,,
+benign_hardneg-000,benign_hardneg,clean,benign,benign,False,D_full,ESCALATE,CLOSE,0,1,0,0,0,0,12064.387599999463,0.0,0,0,llm_unavailable,,
+benign_hardneg-001,benign_hardneg,clean,benign,benign,False,A_raw,CLOSE,CLOSE,0,0,1,0,0,1,2858.6677000021155,0.0,2927,657,llm_closed,,
+benign_hardneg-001,benign_hardneg,clean,benign,benign,False,D_full,ESCALATE,CLOSE,0,1,0,0,0,0,12469.223299998703,0.0,0,0,llm_unavailable,,
+benign_hardneg-002,benign_hardneg,clean,benign,benign,False,A_raw,ESCALATE,CLOSE,0,1,0,0,0,0,12277.471500001411,0.0,0,0,llm_unavailable,,
+benign_hardneg-002,benign_hardneg,clean,benign,benign,False,D_full,ESCALATE,CLOSE,0,1,0,0,0,0,3354.3538999983866,0.0,0,0,llm_unavailable,,

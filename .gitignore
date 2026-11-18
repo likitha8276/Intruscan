@@ -28,3 +28,13 @@ handoff_smoke_test.jsonl
 slow_brain_batch_results.jsonl
 intruscan-source.tar.gz
 local_changes.patch
+
+scratch/
+.streamlit/secrets.toml
+
+smoke/
+incidents.db
+scored_flows.jsonl
+pilot_benign.py
+*.bak_ft
+dashboard/app_backup.py

@@ -67,10 +67,21 @@ SYSTEM_HARDENED = (
 
 
 
-def build_prompt(alert: Alert, events, logs: list[str], hardened: bool) -> tuple[str, str]:
+def build_prompt(alert: Alert, events, logs: list[str], hardened: bool,
+                 list_relations: bool = False) -> tuple[str, str]:
     graph_txt = "\n".join(render_event(e) for e in events) or "(no events)"
     head = f"ALERT: id={alert.alert_id} entities={','.join(alert.entities)} ts={alert.ts.isoformat()}\n{alert.description}\n"
     ev_block = f"EVIDENCE GRAPH:\n{graph_txt}\n"
+    if list_relations:
+        # Only relations that actually appear in the evidence graph. A chain step naming any
+        # other relation cannot be verified, so the model is told not to use one.
+        rels = sorted({e.rel for e in events})
+        if rels:
+            ev_block += (
+                'ALLOWED RELATIONS: every chain step\'s "rel" must be copied exactly from the '
+                "evidence graph lines above. The relations present are: " + ", ".join(rels) + ". "
+                "A relation that is not in this list has no evidence; do not use it.\n"
+            )
     log_txt = "\n".join(logs) or "(none)"
     if hardened:
         log_block = f"RAW LOG EXCERPTS:\n<untrusted_logs>\n{log_txt}\n</untrusted_logs>\n"

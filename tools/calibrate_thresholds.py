@@ -376,7 +376,7 @@ def score_flows(
     for index, record in enumerate(records):
         where = f"{path}: line {record.line}"
         try:
-            score = model.compute_s_score(features_from_flow(record.flow))
+            score = model.compute_s_score(model.extract_features(record.flow))
         except (KeyError, TypeError, ValueError) as exc:
             raise CalibrationError(f"{where}: cannot score flow: {exc}") from exc
         if not math.isfinite(score) or not 0.0 <= score <= 1.0:

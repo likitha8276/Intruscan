@@ -95,6 +95,33 @@ def run(scored, output, index, python=sys.executable, model="openai/gpt-oss-20b"
     return len(groups), len(events), skipped
 
 
+def run_fast_track(scored, output, index, python, model, config, timeout, max_events, root, llm,
+                   incident_store, run_context, baseline_path=None, baseline_label=None):
+    """Agent -> verifier -> risk gate for FAST_TRACK flows. No RAG. Results go into the existing FT incidents."""
+    meta = {}
+    events, logs, skipped = build(scored, index, baseline_path=baseline_path, baseline_label=baseline_label,
+                                  meta_out=meta, routes=("FAST_TRACK",), skip_rag=True)
+    groups = defaultdict(list)
+    for e in events:
+        groups[e["src"]].append(e)
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
+    with open(output, "w", encoding="utf-8") as dest:
+        for src, evs in groups.items():
+            base = [e for e in evs if e["event_id"].startswith(BASE_PREFIX)][:5]
+            inc = [e for e in evs if not e["event_id"].startswith(BASE_PREFIX)]
+            sent = base + inc[:max_events]
+            result = inc_mod.apply_fast_track_floor(
+                run_incident(src, sent, logs, python, model, config, timeout, root, llm=llm))
+            flow_ids = sorted({meta[e["event_id"]]["flow_id"] for e in inc if meta.get(e["event_id"], {}).get("flow_id")})
+            coverage = {"events_sent": min(len(inc), max_events), "events_total": len(inc)}
+            n = inc_mod.attach_agent_result(incident_store, flow_ids, result, coverage) if incident_store else 0
+            dest.write(json.dumps({"src": src, "route": "FAST_TRACK", "soc_result": result,
+                                   "coverage": coverage}, ensure_ascii=False) + "\n")
+            dest.flush()
+            LOG.info("fast-track src=%s flows=%d attached=%d status=%s", src, len(inc), n, result["status"])
+    return len(groups), len(events), skipped
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scored", type=Path, default=Path("scored_flows.jsonl"))
@@ -118,6 +145,8 @@ def main():
     ap.add_argument("--fast-brain-model", default=None,
                     help="trusted model .joblib; its fingerprint and feature set are stored with incidents")
     ap.add_argument("--thresholds", default=None, help="approved thresholds file (with --fast-brain-model)")
+    ap.add_argument("--fast-track-agent", action="store_true",
+                    help="also run FAST_TRACK flows through the agent, verifier and risk gate (no RAG)")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     from . import bridge as _bridge
@@ -134,6 +163,11 @@ def main():
                                baseline_path=a.baseline_file, baseline_label=a.baseline_label, llm=a.llm,
                                incident_store=store, run_context=ctx)
     LOG.info("done incidents=%d events=%d skipped=%d", n_inc, n_ev, skipped)
+    if a.fast_track_agent:
+        ft = run_fast_track(a.scored, a.output.with_name(a.output.stem + "_fast_track.jsonl"), None, a.python,
+                            a.model, a.config, a.timeout, a.max_events, PROJECT_ROOT, a.llm, store, ctx,
+                            baseline_path=a.baseline_file, baseline_label=a.baseline_label)
+        LOG.info("fast-track agent done sources=%d events=%d skipped=%d", *ft)
 
 
 if __name__ == "__main__":

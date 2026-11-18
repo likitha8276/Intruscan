@@ -4,5 +4,9 @@ matplotlib>=3.8
 pytest>=8.0
 scikit-learn>=1.4
 pandas>=2.0
+python-dotenv
+numpy
+joblib
 chromadb>=1.0
 sentence-transformers>=3.0
+streamlit

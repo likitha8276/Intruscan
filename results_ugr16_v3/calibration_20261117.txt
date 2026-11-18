@@ -1,0 +1,38 @@
+IntruScan: Fast Brain v3 calibration on UGR'16 CALIB (28 July 2016, diag sample)
+Date of run: 2026-11-17
+Command: tools/calibrate_thresholds.py calibrate with explicit --lower 0.596033 --upper 0.635351
+Note: automatic selection failed (recall 0.5597 < 0.60 at the 5% benign cap, then lower > upper
+      when the recall target was relaxed to 0.55). Cutoffs were therefore set explicitly from
+      CALIB (lower = benign p95, upper = benign p99). The recall target was relaxed after seeing results.
+
+Model: data\models\fast_brain_ugr16_v3.joblib (sha256 9f2e1e30eeea64e0...)
+Calibration data: data\raw\ugr16_calib_diag.jsonl (sha256 71e012166c8ae4bc...): 260,994 benign ('background'), 138,321 attack
+  benign p90: 0.562492
+  benign p95: 0.596024
+  benign p99: 0.635351
+  attack p1: 0.402477
+  attack p5: 0.422814
+  attack p10: 0.533454
+WARNING: benign and attack score ranges overlap (attack min 0.402477 <= benign max 0.712602); 44.0% of attack flows score at or below the benign 95th percentile.
+
+Candidate thresholds: lower=0.596033 upper=0.635351
+  lower (explicit_operating_point): escalation boundary
+  upper (explicit_operating_point): FAST_TRACK boundary
+
+Calibration-set metrics (IN-SAMPLE, optimistic; not a performance claim)
+  samples: 399315 (260994 benign, 138321 attack); thresholds lower=0.596033 upper=0.635351
+  binary rule: CLEAR = predicted benign; SLOW_BRAIN or FAST_TRACK = escalated (predicted anomalous). Escalation is not a confirmed attack.
+  escalation: TP=77425 FP=12648 TN=248346 FN=60896
+    precision=0.8596 escalation_recall=0.5597 specificity=0.9515 f1=0.6780 false_positive_rate=0.0485
+  FAST_TRACK (separate from escalation; controlled by the upper threshold): fast_track_recall=0.0567 fast_track_precision=0.7507 benign_fast_track_rate=0.0100
+  routing (all, n=399315): CLEAR=77.44% SLOW_BRAIN=19.94% FAST_TRACK=2.61%
+  routing (benign, n=260994): CLEAR=95.15% SLOW_BRAIN=3.85% FAST_TRACK=1.00%
+  routing (attack, n=138321): CLEAR=44.03% SLOW_BRAIN=50.31% FAST_TRACK=5.67%
+
+Histogram saved to calibration_histogram.png
+Candidate written to data\derived\ugr16_diag_v3.json (status: candidate; NOT active).
+Next: run 'evaluate' on a separate test file, then 'approve'.
+exit code (diag): 0
+
+Caveat for the report: precision and F1 above are inflated by sampling (background kept 1 in 500,
+attacks 1 in 10). Recall and false-positive rate are not affected.

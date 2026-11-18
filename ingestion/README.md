@@ -1,8 +1,8 @@
 Local Layer 1 → Layer 2 pipeline
-Layer 1 reads NetFlow/IPFIX-derived flow records from JSONL and archives the
+Layer 1 reads NetFlow-style flow records from local JSONL files (there is no live IPFIX collector) and archives the
 normalized fields plus the exact input JSON in SQLite. A channel-based worker
 pool archives records in transactions of up to 500. Rows are idempotent by
-flow_id. Kafka is intentionally not part of this local integration.
+flow_id. Kafka and PCAP capture are not used; Ollama is not used either (LLM calls go to Groq, with Gemini as fallback).
 
 The SQLite connection uses WAL, NORMAL synchronous mode, and a busy timeout.
 No ORM is used.
@@ -10,8 +10,12 @@ Canonical input
 {"flow_id":"f-001","timestamp":"2026-11-03T10:00:00Z","src_ip":"10.0.0.1","dst_ip":"10.0.0.2","src_port":51000,"dst_port":443,"protocol":"tcp","packets":12,"bytes":4096,"duration_ms":125.5,"label":"benign"}
 Required fields are flow_id, RFC3339 timestamp, src_ip, dst_ip,
 src_port, dst_port, protocol, packets, bytes, and duration_ms.
-label is optional, but training only uses records explicitly labeled
-"benign". Unknown fields and malformed records fail the ingestion run.
+label, metadata (object) and features (object of non-negative numbers) are optional;
+training only uses records explicitly labeled "benign". Any other field is rejected,
+including provenance_signature: signatures belong to *events* and are added by
+rag.bridge, not to flows. Malformed records fail the ingestion run (the whole batch).
+The Python mirror of these rules is soc_agent/flow_contract.py
+(`python -m soc_agent.flow_contract flows.jsonl`), kept in sync by tests/test_flow_contract.py.
 Run end to end
 From the repository root, use the included synthetic demo data:
 cd ingestion
@@ -30,9 +34,10 @@ FAST_TRACK). Scores are normalized anomaly strengths, not calibrated
 probabilities. Tune/evaluate routing thresholds against held-out labeled data
 before operational use.
 Layer 2 scoring
-Four features are derived consistently by the Python runner: log1p(packets),
-log1p(bytes), log1p(duration_ms), and log1p(bytes / packets) (zero when
-packet count is zero). The library class is also available for direct use.
+Two feature sets exist (soc_agent/features.py). v1 (default): log1p(packets), log1p(bytes),
+log1p(duration_ms), log1p(bytes / packets). v2 adds packet and byte rates, port classes and
+protocol indicators (needs src_port, dst_port, protocol). Choose at training time with
+`train --feature-set v2`; the model records it and scoring always uses the recorded set.
 UGR'16 CSV conversion and direct scoring
 The streaming converter at tools/parse_ugr16.py recognizes common UGR'16
 headers such as SrcAddr, DstAddr, Proto, TotBytes, TotPkts, Label,

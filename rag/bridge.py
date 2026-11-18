@@ -87,7 +87,7 @@ def _rows(path):
 
 
 def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=None, baseline_label=None,
-          untimed_out=None, meta_out=None):
+          untimed_out=None, meta_out=None, routes=("SLOW_BRAIN",), skip_rag=False):
     """Returns (events, logs {event_id: text}, skipped).
 
     Surrogate / missing timestamps: a SLOW_BRAIN flow whose timestamp is not real event time is NOT
@@ -116,9 +116,9 @@ def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=
         if not f["src"] or not f["dst"]:
             skipped += 1
             continue
-        if raw.get("route") == "SLOW_BRAIN":             # FAST_TRACK is recorded by soc_agent.incidents
+        if raw.get("route") in routes:             # FAST_TRACK is recorded by soc_agent.incidents
             if not is_timed(f):
-                if untimed_out is not None:
+                if untimed_out is not None and raw.get("route") == "SLOW_BRAIN":
                     untimed_out.append(raw)
                 continue
             slow.append((raw, f))
@@ -149,7 +149,7 @@ def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=
 
     events, logs = [], {}
     for i, (raw, f, behavior) in enumerate(prepared):
-        hits = [] if behavior in NO_LOOKUP else select_hits(index.query(describe(f, behavior, stats), k=8))
+        hits = [] if (skip_rag or behavior in NO_LOOKUP) else select_hits(index.query(describe(f, behavior, stats), k=8))
         ev = build_event(f, f"E{i:06d}")
         if provenance_key is not None:
             ev = _sign_event_dict(ev, provenance_key)
@@ -158,7 +158,8 @@ def build(scored_path, index, baseline_routes=("CLEAR",), hops=2, baseline_path=
         logs[ev["event_id"]] = render_log(raw, f, behavior, behavior_stats(f, stats), hits, ctx)
         if meta_out is not None:
             meta_out[ev["event_id"]] = {"behavior": behavior, "mitre": hits, "context": ctx,
-                                        "s_score": raw.get("s_score"), "route": raw.get("route")}
+                                        "s_score": raw.get("s_score"), "route": raw.get("route"),
+                                        "flow_id": raw.get("flow_id")}
 
     for src, dst in sorted(pairs):
         summ = graph.baseline_summary(src, dst)

@@ -14,12 +14,19 @@ from typing import TextIO
 import joblib
 import numpy as np
 
-from .fast_brain import EarlyExitMVIForest, features_from_flow
+from .features import DEFAULT_FEATURE_SET, FEATURE_SETS, extract_features, validate_feature_set
+from .fast_brain import EarlyExitMVIForest
 from .thresholds import resolve_routing_thresholds
 
 
-def train_archive(archive_path: str, model_path: str, random_state: int) -> int:
+def train_archive(
+    archive_path: str,
+    model_path: str,
+    random_state: int,
+    feature_set: str = DEFAULT_FEATURE_SET,
+) -> int:
     """Fit on labeled benign records and save a production-use model."""
+    validate_feature_set(feature_set)
     features: list[np.ndarray] = []
     with sqlite3.connect(archive_path) as connection:
         rows = connection.execute(
@@ -28,13 +35,13 @@ def train_archive(archive_path: str, model_path: str, random_state: int) -> int:
         )
         for (raw_json,) in rows:
             flow = json.loads(raw_json)
-            features.append(features_from_flow(flow))
+            features.append(extract_features(flow, feature_set))
     if len(features) < 2:
         raise ValueError(
             "training requires at least two flows labeled 'benign' in the archive"
         )
 
-    forest = EarlyExitMVIForest(random_state=random_state)
+    forest = EarlyExitMVIForest(random_state=random_state, feature_set=feature_set)
     forest.fit(np.vstack(features))
     destination = Path(model_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -48,8 +55,10 @@ def train_jsonl(
     random_state: int,
     normal_labels: set[str],
     max_training_rows: int,
+    feature_set: str = DEFAULT_FEATURE_SET,
 ) -> int:
     """Train from JSONL with a bounded reservoir of normal-flow features."""
+    validate_feature_set(feature_set)
     if max_training_rows < 2:
         raise ValueError("max_training_rows must be at least 2")
     rng = random.Random(random_state)
@@ -65,7 +74,7 @@ def train_jsonl(
                     raise ValueError("each JSONL record must be an object")
                 if flow.get("label") not in normal_labels:
                     continue
-                vector = features_from_flow(flow)
+                vector = extract_features(flow, feature_set)
             except (json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
                 raise ValueError(
                     f"invalid training record at line {line_number}: {exc}"
@@ -84,7 +93,7 @@ def train_jsonl(
             "training requires at least two records whose label matches "
             + ", ".join(sorted(normal_labels))
         )
-    forest = EarlyExitMVIForest(random_state=random_state)
+    forest = EarlyExitMVIForest(random_state=random_state, feature_set=feature_set)
     forest.fit(np.vstack(features))
     destination = Path(model_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -117,7 +126,7 @@ def score_archive(
         )
         for (raw_json,) in rows:
             flow = json.loads(raw_json)
-            score = forest.compute_s_score(features_from_flow(flow))
+            score = forest.compute_s_score(forest.extract_features(flow))
             result = dict(flow)
             result["s_score"] = score
             result["route"] = forest.route_flow(
@@ -156,7 +165,7 @@ def score_jsonl(
                 flow = json.loads(line)
                 if not isinstance(flow, dict):
                     raise ValueError("each JSONL record must be an object")
-                score = forest.compute_s_score(features_from_flow(flow))
+                score = forest.compute_s_score(forest.extract_features(flow))
             except (json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
                 raise ValueError(
                     f"invalid scoring record at line {line_number}: {exc}"
@@ -184,6 +193,12 @@ def main(argv: list[str] | None = None) -> int:
     train_source.add_argument("--input", help="canonical flow JSONL")
     train_parser.add_argument("--model", default="fast_brain.joblib")
     train_parser.add_argument("--random-state", type=int, default=7)
+    train_parser.add_argument(
+        "--feature-set",
+        choices=sorted(FEATURE_SETS),
+        default=DEFAULT_FEATURE_SET,
+        help="feature set to fit with; scoring always uses the set recorded in the model",
+    )
     train_parser.add_argument(
         "--normal-label",
         action="append",
@@ -217,7 +232,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.archive is None and args.input is None:
                 parser.error("train requires --archive or --input")
             if args.archive:
-                count = train_archive(args.archive, args.model, args.random_state)
+                count = train_archive(
+                    args.archive, args.model, args.random_state, args.feature_set
+                )
             else:
                 labels = set(args.normal_label or ["benign"])
                 count = train_jsonl(
@@ -226,8 +243,12 @@ def main(argv: list[str] | None = None) -> int:
                     args.random_state,
                     labels,
                     args.max_training_rows,
+                    args.feature_set,
                 )
-            print(f"trained on {count} normal flows; saved model to {args.model}")
+            print(
+                f"trained on {count} normal flows "
+                f"(feature set {args.feature_set}); saved model to {args.model}"
+            )
             return 0
 
         if args.archive is None and args.input is None:

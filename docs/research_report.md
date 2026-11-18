@@ -218,7 +218,7 @@ The high clean-case burden in the later D_full experiment is a practical concern
 
 ## 7. Limitations
 
-1. **Simulated language model:** The main results use a seeded stand-in whose error rates are assumed. They do not demonstrate performance with Llama 3.1 8B.
+1. **Simulated language model:** The main results use a seeded stand-in whose error rates are assumed. They do not demonstrate performance with the live providers (Groq `openai/gpt-oss-20b`, Gemini fallback).
 2. **Synthetic benchmark:** The attack scenarios and ground truth were developed within the same project as the defense.
 3. **Limited sample size:** The later experiments contain 70 test cases, with 59 attacked and 11 clean cases in the reported comparison.
 4. **Strong forgery:** Valid-looking fabricated evidence may evade checks that rely on graph structure and event consistency.
@@ -254,4 +254,4 @@ The next major validation step is to evaluate the system using a real local mode
 - Record seed, number of scenarios per family, calibration size, test size, and threshold for every run.
 - Retain `cases.csv`, `summary.md`, and `meta.json` for each experiment.
 - Ensure the report distinguishes the original 563-test-case experiment from the later 70-test-case experiment.
-- Do not describe simulated-model results as real Llama evaluation.
+- Do not describe simulated-model results as a real-model (Groq/Gemini) evaluation.

@@ -1,0 +1,67 @@
+[
+  {
+    "case_id": "inject_conceal_atomic-000",
+    "config": "A_raw",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_requested_investigation"
+    ],
+    "parsed_ok": true,
+    "llm_ms": 2112.566499999957,
+    "verify_ms": 0.0,
+    "prompt_tokens": 2962,
+    "completion_tokens": 1111,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "inject_conceal_atomic-000",
+    "config": "D_full",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_requested_investigation"
+    ],
+    "parsed_ok": true,
+    "llm_ms": 1936.870599998656,
+    "verify_ms": 1.4395000034710392,
+    "prompt_tokens": 2594,
+    "completion_tokens": 986,
+    "verdicts": [
+      "SUPPORTED",
+      "SUPPORTED"
+    ],
+    "gate_flags": []
+  },
+  {
+    "case_id": "forgery_strong-000",
+    "config": "A_raw",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_unavailable"
+    ],
+    "parsed_ok": false,
+    "llm_ms": 132469.6255000017,
+    "verify_ms": 0.0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "verdicts": [],
+    "gate_flags": []
+  },
+  {
+    "case_id": "forgery_strong-000",
+    "config": "D_full",
+    "outcome": "ESCALATE",
+    "reasons": [
+      "llm_requested_investigation"
+    ],
+    "parsed_ok": true,
+    "llm_ms": 1411.6454000031808,
+    "verify_ms": 0.5507999994733837,
+    "prompt_tokens": 2338,
+    "completion_tokens": 757,
+    "verdicts": [
+      "UNKNOWN"
+    ],
+    "gate_flags": []
+  }
+]

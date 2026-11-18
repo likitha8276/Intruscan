@@ -72,6 +72,9 @@ def make_configs(v: VerifierConfig) -> dict[str, AgentConfig]:
         ),
         # Full system.
         "D_full": AgentConfig("D_full", verifier=v),
+        # D_full plus an explicit list of the relations present in the evidence graph, so a
+        # chain step cannot name a relation that no event carries.
+        "D_full_rel": AgentConfig("D_full_rel", verifier=v, list_relations=True),
         "F_provenance": AgentConfig(
             "F_provenance",
             verifier=replace(

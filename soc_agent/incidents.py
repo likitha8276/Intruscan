@@ -16,6 +16,7 @@ Records are unsigned: see docs/SECURITY_AND_LIMITATIONS.md ("Provenance").
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import sqlite3
@@ -401,3 +402,34 @@ def record_scored_file(
             else:
                 counts["existing"] += 1
     return counts
+
+
+def apply_fast_track_floor(result):
+    """FAST_TRACK is never auto-closed: whatever the agent says, the outcome is ESCALATE."""
+    out = dict(result)
+    if out.get("outcome") != "ESCALATE":
+        out["agent_outcome_original"] = out.get("outcome")
+        out["outcome"] = "ESCALATE"
+        out["reasons"] = list(out.get("reasons") or []) + ["fast_track_floor_escalate"]
+    return out
+
+
+def attach_agent_result(store, flow_ids, soc_result, coverage=None):
+    """Add an agent result to the existing FAST_TRACK incidents of these flows. Returns how many."""
+    names = {f.name for f in dataclasses.fields(Incident)}
+    result = dict(soc_result)
+    if coverage:
+        result["coverage"] = coverage
+    done = 0
+    for fid in flow_ids:
+        rec = store.get(f"FT-{_digest('fast_track', fid)}")
+        if rec is None:
+            continue
+        data = {k: v for k, v in rec.items() if k in names}
+        data["soc_result"] = result
+        data["llm_called"] = True
+        data["priority"] = PRIORITY_HIGH
+        data["reasons"] = [r for r in (rec.get("reasons") or []) if r != "no_llm_call_by_design"] + ["agent_reviewed_fast_track"]
+        store.save(Incident(**data), replace=True)
+        done += 1
+    return done

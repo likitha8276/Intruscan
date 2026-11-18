@@ -167,10 +167,9 @@ def verify_claim(
             frontier = []
             for state in candidate_states:
                 _, state_min, state_total = state
+                # Weak dominance: an equal (min, total) pair is a duplicate, not a new path.
                 dominated = any(
-                    other_min >= state_min
-                    and other_total >= state_total
-                    and (other_min > state_min or other_total > state_total)
+                    other_min >= state_min and other_total >= state_total
                     for _, other_min, other_total in frontier
                 )
                 if dominated:
@@ -178,11 +177,7 @@ def verify_claim(
 
                 frontier = [
                     other for other in frontier
-                    if not (
-                        state_min >= other[1]
-                        and state_total >= other[2]
-                        and (state_min > other[1] or state_total > other[2])
-                    )
+                    if not (state_min >= other[1] and state_total >= other[2])
                 ]
                 frontier.append(state)
 
