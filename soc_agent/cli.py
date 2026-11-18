@@ -16,7 +16,7 @@ from .agent import SOCAgent
 from .config import VerifierConfig
 from .evaluate import make_configs
 from .io import load_events_jsonl, scenario_from_store
-from .llm import FallbackLLM, GeminiClient, GroqClient, SimulatedLLM
+from .llm import FallbackLLM, GeminiClient, GroqClient, ProviderChain,SimulatedLLM
 
 
 def load_logs_json(path: str) -> dict[str, str]:
@@ -39,19 +39,20 @@ def build_llm(mode: str, model: str):
     if mode == "gemini":
         return GeminiClient()
     if mode == "auto":
-        if not os.environ.get("GROQ_API_KEY"):
+        providers = []
+        if os.environ.get("GROQ_API_KEY"):
+            providers.append(("groq", GroqClient(model=model)))
+            backup = os.environ.get("GROQ_BACKUP_MODEL", "openai/gpt-oss-120b")
+            if backup != model:
+                providers.append(("groq_backup", GroqClient(model=backup)))
+        if os.environ.get("GEMINI_API_KEY"):
+            providers.append(("gemini", GeminiClient()))
+        if not providers:
             raise ValueError(
-                "GROQ_API_KEY is missing. Add it to .env or choose --llm gemini/sim."
+                "No LLM keys found. Set GROQ_API_KEY and/or GEMINI_API_KEY, "
+                "or choose --llm sim."
             )
-        if not os.environ.get("GEMINI_API_KEY"):
-            raise ValueError(
-                "GEMINI_API_KEY is missing. Add it to .env or choose --llm groq/sim."
-            )
-        return FallbackLLM(
-            primary=GroqClient(model=model),
-            fallback=GeminiClient(),
-        )
-    raise ValueError(f"Unsupported LLM mode: {mode}")
+        return ProviderChain(providers)
 
 
 def build_parser() -> argparse.ArgumentParser:

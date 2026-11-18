@@ -24,8 +24,48 @@ from soc_agent.llm import (
     GeminiClient,
     LLMProviderError,
     LLMUnavailableError,
+    ProviderChain,
     SimulatedLLM,
 )
+def _failing(status, transient, label="x"):
+    class Failing:
+        last_usage = {}
+        calls = 0
+
+        def generate(self, *args):
+            Failing.calls += 1
+            raise LLMProviderError("fail", label, transient, status)
+
+    return Failing
+
+
+def test_chain_falls_through_to_third_provider():
+    A, B = _failing(429, True, "a"), _failing(401, False, "b")
+    chain = ProviderChain([("a", A()), ("b", B()), ("c", Scripted('{"ok":1}'))])
+    assert chain.generate("s", "u") == '{"ok":1}'
+    assert chain.last_provider == "c"
+
+
+def test_chain_skips_failed_provider_on_next_call():
+    A = _failing(401, False, "a")
+    chain = ProviderChain([("a", A()), ("b", Scripted('{"ok":1}'))])
+    chain.generate("s", "u")
+    chain.generate("s", "u")
+    assert A.calls == 1
+
+
+def test_chain_does_not_fall_through_on_bad_request():
+    A = _failing(400, False, "a")
+    chain = ProviderChain([("a", A()), ("b", Scripted('{"ok":1}'))])
+    with pytest.raises(LLMProviderError):
+        chain.generate("s", "u")
+
+
+def test_chain_reports_all_failures():
+    A, B = _failing(503, True, "a"), _failing(503, True, "b")
+    chain = ProviderChain([("a", A()), ("b", B())])
+    with pytest.raises(LLMUnavailableError):
+        chain.generate("s", "u")
 from soc_agent.models import Outcome
 from soc_agent.prompts import parse_output
 from soc_agent.router import aggregate
@@ -601,13 +641,26 @@ def test_fallback_llm_uses_gemini_only_after_transient_primary_error():
     assert llm.generate("sys", "user") == '{"claims":[]}'
     assert llm.last_provider == "gemini"
 
-
-def test_fallback_llm_does_not_fallback_after_auth_error():
+def test_fallback_llm_uses_gemini_after_auth_error():
     class RejectedPrimary:
         last_usage = {}
 
         def generate(self, *args):
             raise LLMProviderError("bad API key", "groq", False, 401)
+
+    fallback = Scripted('{"claims":[]}')
+
+    llm = FallbackLLM(RejectedPrimary(), fallback)
+    assert llm.generate("sys", "user") == '{"claims":[]}'
+    assert llm.last_provider == "gemini"
+
+
+def test_fallback_llm_does_not_fallback_after_bad_request():
+    class RejectedPrimary:
+        last_usage = {}
+
+        def generate(self, *args):
+            raise LLMProviderError("bad request", "groq", False, 400)
 
     fallback = Scripted('{"claims":[]}')
 
