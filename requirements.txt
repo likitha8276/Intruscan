@@ -7,6 +7,6 @@ pandas>=2.0
 python-dotenv
 numpy
 joblib
-chromadb
-sentence-transformers
+chromadb>=1.0
+sentence-transformers>=3.0
 streamlit
