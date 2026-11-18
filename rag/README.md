@@ -27,7 +27,7 @@ NORMAL_FLOWS.jsonl is the data the fast brain was trained on; NORMAL_LABEL is th
 
 ## Notes and limits
 
-- Only SLOW_BRAIN flows are processed. FAST_TRACK bypasses this layer. The ground truth `label` is never forwarded.
+- Only SLOW_BRAIN flows go through retrieval. FAST_TRACK bypasses this layer. With `--fast-track-agent`, `rag.handoff` also sends FAST_TRACK flows to the agent, verifier and risk gate without MITRE retrieval (off by default). The ground truth `label` is never forwarded.
 - Events use `rel = connect` plus one `baseline_connect` summary per authorized host pair. Scan, brute force and
   exfiltration labels are heuristics and appear only in the log text, marked as inferred.
 - Behaviour labels: PORT_SCAN, BRUTE_FORCE_SUSPECTED, EXFIL_SUSPECTED, DOS_FLOOD_SUSPECTED. Anything else is ANOMALOUS_FLOW and gets no lookup.
