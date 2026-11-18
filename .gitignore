@@ -28,3 +28,6 @@ handoff_smoke_test.jsonl
 slow_brain_batch_results.jsonl
 intruscan-source.tar.gz
 local_changes.patch
+
+scratch/
+.streamlit/secrets.toml
