@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
-import sys
-from pathlib import Path
 import subprocess
+import sys
 import tempfile
+from datetime import datetime
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -26,24 +28,84 @@ from soc_agent.incidents import IncidentStore
 
 st.set_page_config(page_title="INTRUSCAN SOC", layout="wide")
 st.title("INTRUSCAN - SOC dashboard")
+st.markdown(
+    """
+    <style>
+    /* Global dark theme and font polish */
+    .stApp {
+        background-color: #09090b;
+        color: #f4f4f5;
+    }
+    
+    /* Sleek card containers for metrics */
+    div[data-testid="stMetric"] {
+        background-color: #121215;
+        border: 1px solid #27272a;
+        padding: 16px;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    
+    div[data-testid="stMetric"] label {
+        color: #a1a1aa !important;
+        font-weight: 500;
+    }
+
+    /* Refined tab navigation */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 6px;
+        background-color: transparent;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background-color: #121215;
+        border-radius: 6px;
+        color: #a1a1aa;
+        border: 1px solid #27272a;
+        padding: 8px 16px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #27272a !important;
+        color: #ffffff !important;
+        border-color: #3f3f46 !important;
+    }
+
+    /* Clean up headers */
+    h1, h2, h3 {
+        letter-spacing: -0.025em;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # --------------------------------------------------
 # SIDEBAR
 # --------------------------------------------------
 
+UPLOAD_ROOT = ROOT / "smoke" / "uploads"
+
+# An upload run asks for its new files to be shown by leaving them here;
+# they are applied before the sidebar widgets are created (Streamlit does not
+# allow changing a widget's value after it exists in the same run).
+if "pending_paths" in st.session_state:
+    _new_scored, _new_db = st.session_state.pop("pending_paths")
+    st.session_state["scored_path"] = _new_scored
+    st.session_state["db_path"] = _new_db
+
+st.session_state.setdefault(
+    "scored_path", os.environ.get("INTRUSCAN_SCORED", "scored_flows.jsonl")
+)
+st.session_state.setdefault(
+    "db_path", os.environ.get("INTRUSCAN_INCIDENT_DB", "incidents.db")
+)
+
 with st.sidebar:
     st.header("Data sources")
 
-    scored_path = st.text_input(
-        "Scored flows (JSONL)",
-        os.environ.get("INTRUSCAN_SCORED", "scored_flows.jsonl"),
-    )
+    scored_path = st.text_input("Scored flows (JSONL)", key="scored_path")
 
-    db_path = st.text_input(
-        "Incident store (SQLite)",
-        os.environ.get("INTRUSCAN_INCIDENT_DB", "incidents.db"),
-    )
+    db_path = st.text_input("Incident store (SQLite)", key="db_path")
 
     max_rows = st.number_input(
         "Max flow rows to load",
@@ -56,86 +118,60 @@ with st.sidebar:
     st.caption("Refresh the page (or press R) to re-read the files.")
 
 
+
+
 # --------------------------------------------------
-# DATASET UPLOAD AND PIPELINE
+# UGR'16 UPLOAD (writes NEW files; never touches the sidebar files)
 # --------------------------------------------------
 
-CICIDS_MODEL = ROOT / "data" / "models" / "fast_brain_cicids2017.joblib"
 UGR16_MODEL = ROOT / "data" / "models" / "fast_brain_ugr16_v3.joblib"
 UGR16_BASELINE = ROOT / "data" / "raw" / "ugr16_train.jsonl"
 
-st.subheader("Upload dataset and run analysis")
+st.subheader("Upload a UGR'16 CSV and run analysis")
 
-dataset = st.radio(
-    "Dataset type",
-    ["CICIDS2017", "UGR'16"],
-    horizontal=True,
-)
-is_ugr = dataset == "UGR'16"
+if "upload_notice" in st.session_state:
+    st.success(st.session_state.pop("upload_notice"))
 
-if is_ugr:
-    st.caption(
-        "UGR'16: upload an official headerless 13-column labelled CSV (a small "
-        "sample, not a whole weekly file). It is converted with "
-        "tools/parse_ugr16_native.py and scored with fast_brain_ugr16_v3. "
-        "Routing uses the approved v3 thresholds from soc_agent/thresholds.json "
-        "(lower 0.596, upper 0.635), bound to the v3 model."
-    )
-else:
-    st.caption(
-        "CICIDS2017: uses tools/parse_cicids2017.py and "
-        "fast_brain_cicids2017.joblib."
-    )
 
 uploaded_file = st.file_uploader(
-    f"Upload {dataset} CSV",
+    "Upload UGR'16 CSV",
     type=["csv"],
-    help=(
-        "Headerless official UGR'16 CSV (13 columns)."
-        if is_ugr
-        else "Upload a CICIDS2017 flow CSV file."
-    ),
+    help="Headerless official UGR'16 CSV (13 columns).",
 )
 
-max_events = 12
-if is_ugr:
-    max_events = st.number_input(
-        "Max LLM events (one LLM call per source; rate limits apply)",
-        min_value=1,
-        max_value=100,
-        value=12,
-        step=1,
-    )
-
-confirm_write = st.checkbox(
-    "I understand this run writes to the sidebar paths "
-    f"(`{scored_path}` and `{db_path}`) and may replace or extend them."
+max_events = st.number_input(
+    "Max LLM events per source",
+    min_value=1,
+    max_value=100,
+    value=12,
+    step=1,
 )
 
 if st.button(
     "Run Intruscan analysis",
     type="primary",
-    disabled=uploaded_file is None or not confirm_write,
+    disabled=uploaded_file is None,
 ):
-    model_path = UGR16_MODEL if is_ugr else CICIDS_MODEL
-    scored_output = Path(scored_path)
-    incident_db = Path(db_path)
-    rag_output = (
-        ROOT / "smoke" / "ugr16_upload_alerts.jsonl"
-        if is_ugr
-        else ROOT / "rag_soc_alerts.jsonl"
-    )
+    if not UGR16_MODEL.is_file():
+        st.error(f"Trained model not found: {UGR16_MODEL}")
 
-    if not model_path.is_file():
-        st.error(f"Trained model not found: {model_path}")
-
-    elif is_ugr and not UGR16_BASELINE.is_file():
+    elif not UGR16_BASELINE.is_file():
         st.error(f"UGR'16 baseline file not found: {UGR16_BASELINE}")
 
     else:
-        scored_output.parent.mkdir(parents=True, exist_ok=True)
-        incident_db.parent.mkdir(parents=True, exist_ok=True)
-        rag_output.parent.mkdir(parents=True, exist_ok=True)
+        source_name = re.sub(
+            r"[^A-Za-z0-9_.-]+",
+            "_",
+            Path(uploaded_file.name).stem,
+        ) or "ugr16_upload"
+
+        run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{source_name}"
+        run_dir = UPLOAD_ROOT / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+
+        scored_output = run_dir / "scored.jsonl"
+        incident_db = run_dir / "incidents.db"
+        rag_output = run_dir / "alerts.jsonl"
 
         def run_step(label, command):
             st.write(f"**{label}**")
@@ -169,32 +205,18 @@ if st.button(
 
                 with st.spinner("Processing uploaded dataset..."):
 
-                    # STEP 1: CSV PARSING
-                    if is_ugr:
-                        source_name = re.sub(
-                            r"[^A-Za-z0-9_.-]+",
-                            "_",
-                            Path(uploaded_file.name).stem,
-                        ) or "ugr16_upload"
-                        parse_command = [
+                    run_step(
+                        "Step 1: Parsing CSV",
+                        [
                             sys.executable,
                             "tools/parse_ugr16_native.py",
                             str(csv_path),
                             str(parsed_path),
                             "--source-name",
                             source_name,
-                        ]
-                    else:
-                        parse_command = [
-                            sys.executable,
-                            "tools/parse_cicids2017.py",
-                            str(csv_path),
-                            str(parsed_path),
-                        ]
+                        ],
+                    )
 
-                    run_step("Step 1: Parsing CSV", parse_command)
-
-                    # STEP 2: FAST BRAIN
                     run_step(
                         "Step 2: Fast Brain scoring",
                         [
@@ -205,33 +227,30 @@ if st.button(
                             "--input",
                             str(parsed_path),
                             "--model",
-                            str(model_path),
+                            str(UGR16_MODEL),
                             "--output",
                             str(scored_output),
                         ],
                     )
 
-                    # STEP 3: RAG AND AGENTIC SLOW BRAIN
-                    handoff_command = [
-                        sys.executable,
-                        "-m",
-                        "rag.handoff",
-                        "--scored",
-                        str(scored_output),
-                        "--output",
-                        str(rag_output),
-                        "--incident-db",
-                        str(incident_db),
-                        "--fast-brain-model",
-                        str(model_path),
-                        "--llm",
-                        "auto",
-                        "--model",
-                        "openai/gpt-oss-20b",
-                    ]
-
-                    if is_ugr:
-                        handoff_command += [
+                    run_step(
+                        "Step 3: RAG / Slow Brain handoff",
+                        [
+                            sys.executable,
+                            "-m",
+                            "rag.handoff",
+                            "--scored",
+                            str(scored_output),
+                            "--output",
+                            str(rag_output),
+                            "--incident-db",
+                            str(incident_db),
+                            "--fast-brain-model",
+                            str(UGR16_MODEL),
+                            "--llm",
+                            "auto",
+                            "--model",
+                            "openai/gpt-oss-20b",
                             "--chroma-path",
                             str(ROOT / "smoke" / "chroma_pipe"),
                             "--mitre",
@@ -244,19 +263,26 @@ if st.button(
                             str(int(max_events)),
                             "--timeout",
                             "600",
-                        ]
-
-                    run_step(
-                        "Step 3: RAG / Slow Brain handoff",
-                        handoff_command,
+                        ],
                     )
 
-            st.success("Dataset processed successfully!")
+            st.session_state["upload_notice"] = (
+                f"Upload processed. New files are in smoke/uploads/{run_id}/ "
+                "and are now shown below. Set the sidebar paths back to your "
+                "earlier files to return to the previous data."
+            )
+            st.session_state["pending_paths"] = (
+                str(scored_output),
+                str(incident_db),
+            )
             st.cache_data.clear()
             st.rerun()
 
         except Exception as exc:
-            st.error(f"Analysis failed: {exc}")
+            st.error(
+                f"Analysis failed: {exc}. Partial files (if any) are in "
+                f"smoke/uploads/{run_id}/ ; your other files were not changed."
+            )
 
 
 # --------------------------------------------------
@@ -266,6 +292,80 @@ if st.button(
 
 def _flows(path: str, rows: int, mtime: float):
     return data.load_scored_flows(path, rows)
+
+
+def _as_dict(value):
+    """Stored JSON columns may arrive as dicts or as JSON strings."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            return {}
+    return {}
+
+
+def _render_fast_track(record):
+    """Compact view of a FAST_TRACK incident (no LLM is called for these)."""
+    evidence = _as_dict(record.get("evidence"))
+    rule = _as_dict(evidence.get("rule_check"))
+    thresholds = _as_dict(record.get("thresholds"))
+
+    st.subheader("FAST_TRACK incident")
+
+    a, b, c, d = st.columns(4)
+    a.metric("Route", "FAST_TRACK")
+    b.metric("Priority", record["priority"])
+    c.metric("LLM", "not called")
+    d.metric("Rule check", rule.get("outcome", "n/a"))
+
+    # one-line evidence summary
+    score = record.get("s_score")
+    upper = thresholds.get("upper")
+    parts = [f"source {record.get('src')}"]
+    context = _as_dict(rule.get("source_context"))
+    if context:
+        st.caption(
+            "Source context: "
+            + ", ".join(f"{k} = {v}" for k, v in context.items())
+        )
+
+    
+
+    # rule gate
+    flags = rule.get("gate_flags") or []
+    if flags:
+        st.warning("Rule flags: " + "; ".join(str(f) for f in flags))
+    elif rule:
+        st.success("No rule flags: evidence is consistent with HIGH priority.")
+    else:
+        st.info("No rule check stored for this incident.")
+
+
+    with st.expander("Details (flows, record fields, full rule check)"):
+        st.write(
+            {
+                k: record.get(k)
+                for k in (
+                    "incident_id",
+                    "src",
+                    "dst",
+                    "first_flow_ts",
+                    "feature_set",
+                    "model_sha256",
+                    "thresholds",
+                )
+            }
+        )
+        if evidence.get("flows"):
+            st.dataframe(
+                pd.DataFrame(evidence["flows"]),
+                use_container_width=True,
+            )
+        if rule:
+            st.json(rule)
 
 
 
@@ -450,6 +550,11 @@ with investigate:
 
         record = store.get(chosen) if store else None
 
+        # FAST_TRACK incidents get the short panel and skip the long view
+        if record and record["kind"] == "fast_track" and not record.get("soc_result"):
+            _render_fast_track(record)
+            record = None
+
         if record:
 
             a, b, c = st.columns(3)
@@ -490,6 +595,9 @@ with investigate:
 
                 st.divider()
                 st.subheader("Agentic AI Investigation")
+                cov = soc.get("coverage")
+                if cov:
+                    st.caption(f"FAST_TRACK route, no RAG. The agent reviewed {cov['events_sent']} of {cov['events_total']} flows from this source.")
 
                 st.success(
                     "SOC Agent investigation result available"
@@ -599,12 +707,6 @@ with investigate:
                 st.dataframe(
                     pd.DataFrame(record["mitre"]),
                     use_container_width=True,
-                )
-
-            if record["kind"] == "fast_track":
-                st.info(
-                    "FAST_TRACK: recorded as HIGH priority without "
-                    "an LLM call. No ATT&CK lookup was performed."
                 )
 
 
