@@ -117,6 +117,24 @@ with st.sidebar:
 
     st.caption("Refresh the page (or press R) to re-read the files.")
 
+    st.header("Export (JSONL)")
+    for _label, _file in (
+        ("Scored flows", Path(scored_path)),
+        ("LLM alerts", Path(scored_path).with_name("alerts.jsonl")),
+    ):
+        if not _file.is_file():
+            st.caption(f"{_label}: file not found")
+        elif _file.stat().st_size > 100 * 1024 * 1024:
+            st.caption(f"{_label}: too large to download here, use {_file}")
+        else:
+            st.download_button(
+                f"Download {_label.lower()} (.jsonl)",
+                data=_file.read_bytes(),
+                file_name=_file.name,
+                mime="application/x-ndjson",
+                key=f"dl_{_file.name}",
+            )
+
 
 
 
@@ -132,6 +150,16 @@ st.subheader("Upload a UGR'16 CSV and run analysis")
 if "upload_notice" in st.session_state:
     st.success(st.session_state.pop("upload_notice"))
 
+_last_report = st.session_state.get("last_report_path")
+if _last_report and Path(_last_report).is_file():
+    st.download_button(
+        "Download last run's full report (.jsonl)",
+        data=Path(_last_report).read_bytes(),
+        file_name=f"{Path(_last_report).parent.name}_report.jsonl",
+        mime="application/x-ndjson",
+        key="dl_last_report",
+    )
+
 
 uploaded_file = st.file_uploader(
     "Upload UGR'16 CSV",
@@ -146,7 +174,13 @@ max_events = st.number_input(
     value=12,
     step=1,
 )
-
+max_sources = st.number_input(
+    "Max sources sent to the LLM (0 = no cap)",
+    min_value=0,
+    max_value=1000,
+    value=10,
+    step=1,
+)
 if st.button(
     "Run Intruscan analysis",
     type="primary",
@@ -254,26 +288,39 @@ if st.button(
                             "--chroma-path",
                             str(ROOT / "smoke" / "chroma_pipe"),
                             "--mitre",
-                            "seed",
+                            "full",
                             "--baseline-file",
                             str(UGR16_BASELINE),
                             "--baseline-label",
                             "background",
                             "--max-events",
                             str(int(max_events)),
+                            "--max-sources",
+                            str(int(max_sources)),
                             "--timeout",
                             "600",
                         ],
                     )
 
-            st.session_state["upload_notice"] = (
-                f"Upload processed. New files are in smoke/uploads/{run_id}/ "
-                "and are now shown below. Set the sidebar paths back to your "
-                "earlier files to return to the previous data."
+            # Full per-incident report for later use (does not touch the sidebar)
+            report_path = run_dir / "report.jsonl"
+            _run_store = IncidentStore(incident_db)
+            _run_frame = data.incidents_frame(_run_store)
+            _run_ids = (
+                list(_run_frame["incident_id"]) if not _run_frame.empty else []
             )
-            st.session_state["pending_paths"] = (
-                str(scored_output),
-                str(incident_db),
+            with report_path.open("w", encoding="utf-8") as _fh:
+                for _iid in _run_ids:
+                    _fh.write(
+                        json.dumps(_run_store.get(_iid), default=str) + "\n"
+                    )
+
+            st.session_state["last_report_path"] = str(report_path)
+            st.session_state["upload_notice"] = (
+                f"Upload processed. Files are saved in smoke/uploads/{run_id}/ "
+                "(scored.jsonl, alerts.jsonl, incidents.db, report.jsonl). "
+                "The sidebar was not changed. To view this run, set the "
+                "sidebar paths to its scored.jsonl and incidents.db."
             )
             st.cache_data.clear()
             st.rerun()
@@ -513,24 +560,32 @@ with incidents_tab:
             & incidents["priority"].isin(prios)
         ]
 
-        st.dataframe(
-            view[
-                [
-                    "incident_id",
-                    "kind",
-                    "priority",
-                    "disposition",
-                    "llm_called",
-                    "src",
-                    "dst",
-                    "s_score",
-                    "flow_count",
-                    "ts_kind",
-                    "recorded_at",
-                ]
-            ],
-            use_container_width=True,
+        incident_cols = [
+            "incident_id",
+            "kind",
+            "priority",
+            "disposition",
+            "llm_called",
+            "src",
+            "dst",
+            "s_score",
+            "flow_count",
+            "ts_kind",
+            "recorded_at",
+        ]
+        incident_view = view[incident_cols]
+
+        st.dataframe(incident_view, use_container_width=True)
+
+        st.download_button(
+            "Export incidents (.jsonl)",
+            data=incident_view.to_json(
+                orient="records", lines=True, date_format="iso"
+            ),
+            file_name="incidents.jsonl",
+            mime="application/x-ndjson",
         )
+        st.caption("Exports the rows shown above (after the Kind/Priority filters).")
 
 
 # --------------------------------------------------
@@ -595,83 +650,33 @@ with investigate:
 
                 st.divider()
                 st.subheader("Agentic AI Investigation")
-                cov = soc.get("coverage")
-                if cov:
-                    st.caption(f"FAST_TRACK route, no RAG. The agent reviewed {cov['events_sent']} of {cov['events_total']} flows from this source.")
 
-                st.success(
-                    "SOC Agent investigation result available"
-                )
-
-                # AGENT DECISION
-                a, b, c = st.columns(3)
+                a, o, b, c = st.columns(4)
 
                 a.metric(
-                    "Agent outcome",
-                    soc.get("outcome", "Unknown"),
+                    "Escalated to LLM",
+                    "yes" if record["llm_called"] else "no",
                 )
 
-                b.metric(
-                    "LLM execution",
-                    f"{soc.get('llm_ms', 0):.1f} ms",
+                o.metric(
+                    "Agent outcome",
+                    str(soc.get("outcome", "unknown")).upper(),
                 )
+
+                llm_used = " / ".join(
+                    str(v)
+                    for v in (
+                        soc.get("provider") or record.get("provider"),
+                        soc.get("model") or record.get("model"),
+                    )
+                    if v
+                ) or "not recorded"
+                b.metric("LLM used", llm_used)
 
                 c.metric(
-                    "Verification",
-                    f"{soc.get('verify_ms', 0):.2f} ms",
+                    "LLM time",
+                    f"{soc.get('llm_ms', 0) / 1000:.1f} s",
                 )
-
-                # REASONING
-                st.markdown("#### 1. Agent decision and reasoning")
-
-                st.write(
-                    soc.get(
-                        "reasons",
-                        ["No reasons returned"],
-                    )
-                )
-
-                # PROPOSED ACTION
-                st.markdown("#### 2. Proposed action")
-
-                action = soc.get("action")
-
-                if action:
-                    st.json(action)
-                else:
-                    st.info("No action proposed by the agent.")
-
-                # VERIFICATION
-                st.markdown("#### 3. Evidence verification")
-
-                verdicts = soc.get("verdicts", [])
-
-                if verdicts:
-                    for verdict in verdicts:
-                        st.write(f"• {verdict}")
-                else:
-                    st.info(
-                        "No verification verdicts returned."
-                    )
-
-                # RISK GATE
-                st.markdown("#### 4. Risk gate")
-
-                flags = soc.get("gate_flags", [])
-
-                if flags:
-                    for flag in flags:
-                        st.warning(flag)
-                else:
-                    st.success(
-                        "No risk-gate flags returned."
-                    )
-
-                # COMPLETE RESPONSE
-                with st.expander(
-                    "View complete SOC agent response"
-                ):
-                    st.json(soc)
 
             else:
                 st.info(

@@ -155,6 +155,7 @@ def test_cli_accepts_requested_input_shorthand_and_auto_fallback(
     # replaced below, so this test never contacts either provider.
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.delenv("GROQ_BACKUP_MODEL", raising=False)
 
     def forbid_network(*args, **kwargs):
         raise AssertionError("test must not make a real provider/network request")
@@ -219,11 +220,14 @@ def test_cli_accepts_requested_input_shorthand_and_auto_fallback(
     # Run the real CLI: loaders, scenario, SOCAgent, verifier, gate, router, JSON output.
     cli.main(argv)
 
-    assert [provider for provider, _ in created] == ["groq", "gemini"]
+    assert [provider for provider, _ in created] == ["groq", "groq", "gemini"]
     groq_client = created[0][1]
-    gemini_client = created[1][1]
+    backup_client = created[1][1]
+    gemini_client = created[2][1]
     assert groq_client.model == "openai/gpt-oss-20b"
+    assert backup_client.model == "openai/gpt-oss-120b"
     assert len(groq_client.calls) == 1
+    assert backup_client.calls == []
     assert gemini_client.calls == []
     prompt = groq_client.calls[0]["user"]
     assert event["src"] in prompt and event["dst"] in prompt

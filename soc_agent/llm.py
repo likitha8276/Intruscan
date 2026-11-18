@@ -769,9 +769,11 @@ class GeminiClient:
         }
         return output
 
+AUTH_STATUS_CODES = {401, 403}
+
 
 class FallbackLLM:
-    """Try a primary provider, then a secondary only for transient failures."""
+    """Try a primary provider, then a secondary for transient or auth failures."""
 
     def __init__(self, primary: LLMClient, fallback: LLMClient):
         self.primary = primary
@@ -786,8 +788,16 @@ class FallbackLLM:
             self.last_provider = "groq"
             return output
         except LLMProviderError as primary_error:
-            if not primary_error.transient:
+            is_auth = primary_error.status_code in AUTH_STATUS_CODES
+            if not (primary_error.transient or is_auth):
                 raise
+            if is_auth:
+                print(
+                    f"{primary_error.provider} auth failed "
+                    f"(HTTP {primary_error.status_code}); check the API key. "
+                    "Using fallback provider.",
+                    file=sys.stderr,
+                )
             try:
                 output = self.fallback.generate(system, user, seed_key)
                 self.last_usage = dict(getattr(self.fallback, "last_usage", {}))
@@ -799,3 +809,46 @@ class FallbackLLM:
                     f"Primary ({primary_error.provider}): {primary_error}; "
                     f"fallback ({fallback_error.provider}): {fallback_error}"
                 ) from fallback_error
+
+
+PRIMARY_COOLDOWN_S = 60.0
+
+
+class ProviderChain:
+    """Try providers in order; skip ones that recently failed."""
+
+    def __init__(self, providers: list[tuple[str, LLMClient]]):
+        if not providers:
+            raise ValueError("ProviderChain needs at least one provider.")
+        self.providers = providers
+        self.last_usage: dict = {}
+        self.last_provider: str | None = None
+        self._skip_until = {label: 0.0 for label, _ in providers}
+
+    def generate(self, system: str, user: str, seed_key: str = "") -> str:
+        errors: list[str] = []
+        for label, client in self.providers:
+            if time.monotonic() < self._skip_until[label]:
+                errors.append(f"{label}: skipped (cooling down)")
+                continue
+            try:
+                output = client.generate(system, user, seed_key)
+            except LLMProviderError as exc:
+                is_auth = exc.status_code in AUTH_STATUS_CODES
+                if not (exc.transient or is_auth):
+                    raise
+                if is_auth:
+                    self._skip_until[label] = float("inf")
+                    print(f"{label} auth failed (HTTP {exc.status_code}); "
+                          "check the API key. Disabled for this run.",
+                          file=sys.stderr)
+                else:
+                    self._skip_until[label] = time.monotonic() + PRIMARY_COOLDOWN_S
+                    print(f"{label} unavailable; skipping it for "
+                          f"{PRIMARY_COOLDOWN_S:.0f}s.", file=sys.stderr)
+                errors.append(f"{label}: {exc}")
+                continue
+            self.last_usage = dict(getattr(client, "last_usage", {}))
+            self.last_provider = label
+            return output
+        raise LLMUnavailableError("All LLM providers failed. " + "; ".join(errors))

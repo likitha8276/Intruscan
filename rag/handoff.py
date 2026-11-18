@@ -51,7 +51,7 @@ def run_incident(src, events, logs, python, model, config, timeout, root, max_en
 def run(scored, output, index, python=sys.executable, model="openai/gpt-oss-20b",
         config="D_full", timeout=300.0,
         max_events=12, root=PROJECT_ROOT, baseline_path=None, baseline_label=None, llm="auto",
-        incident_store=None, run_context=None):
+        incident_store=None, run_context=None,max_sources: int | None = None):
     """Group SLOW_BRAIN flows per source and call the SOC CLI once per source.
 
     With `incident_store` (a soc_agent.incidents.IncidentStore) every analysed source, every
@@ -73,6 +73,17 @@ def run(scored, output, index, python=sys.executable, model="openai/gpt-oss-20b"
     groups = defaultdict(list)
     for e in events:
         groups[e["src"]].append(e)
+    if max_sources and len(groups) > max_sources:
+        def _top_score(item):
+            return max(
+                (meta.get(e["event_id"], {}).get("s_score") or 0.0
+                 for e in item[1] if not e["event_id"].startswith(BASE_PREFIX)),
+                default=0.0,
+            )
+        ranked = sorted(groups.items(), key=_top_score, reverse=True)[:max_sources]
+        LOG.warning("max_sources=%d: %d of %d source incidents not sent to the LLM",
+                    max_sources, len(groups) - max_sources, len(groups))
+        groups = defaultdict(list, ranked)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     with open(output, "w", encoding="utf-8") as dest:
         for src, evs in groups.items():
@@ -140,6 +151,8 @@ def main():
     ap.add_argument("--config", default="D_full")
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--max-events", type=int, default=12)
+    ap.add_argument("--max-sources", type=int, default=None,
+                    help="send only the N highest-scoring sources to the LLM")
     ap.add_argument("--incident-db", type=Path, default=None,
                     help="also record incidents (Slow Brain, FAST_TRACK, untimed) in this SQLite store")
     ap.add_argument("--fast-brain-model", default=None,
