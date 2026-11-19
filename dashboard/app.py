@@ -700,8 +700,7 @@ with investigate:
                     )
                     if v
                 ) or "not recorded"
-                b.metric("LLM used", llm_used)
-                c.metric("LLM time", f"{soc.get('llm_ms', 0) / 1000:.1f} s")
+               
 
                 # Agent activity (only shown if the run stored these fields)
                 steps = soc.get("tool_steps") or []
@@ -716,8 +715,6 @@ with investigate:
                         with st.expander(f"Tool step {i}"):
                             st.write(step)
 
-                with st.expander("Raw agent result (debug)"):
-                    st.json(soc)
             else:
                 st.info("No SOC agent result is stored for this incident.")
 
