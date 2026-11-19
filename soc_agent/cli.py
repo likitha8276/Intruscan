@@ -138,6 +138,11 @@ def main(argv=None) -> None:
                 "gate_flags": res.gate_flags,
                 "llm_ms": round(res.llm_ms, 1),
                 "verify_ms": round(res.verify_ms, 2),
+                "llm_ms": round(res.llm_ms, 1),
+                "verify_ms": round(res.verify_ms, 2),
+                "tool_steps": res.tool_steps,
+                "revised": res.revised,
+                "llm_error": res.llm_error,
             },
             indent=2,
         )
