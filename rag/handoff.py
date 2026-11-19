@@ -174,7 +174,8 @@ def main():
     n_inc, n_ev, skipped = run(a.scored, a.output, make_index(a.mitre, a.chroma_path, a.mitre_scope), a.python,
                                a.model, a.config, a.timeout, a.max_events,
                                baseline_path=a.baseline_file, baseline_label=a.baseline_label, llm=a.llm,
-                               incident_store=store, run_context=ctx)
+                               incident_store=store, run_context=ctx,
+                                max_sources=a.max_sources)
     LOG.info("done incidents=%d events=%d skipped=%d", n_inc, n_ev, skipped)
     if a.fast_track_agent:
         ft = run_fast_track(a.scored, a.output.with_name(a.output.stem + "_fast_track.jsonl"), None, a.python,

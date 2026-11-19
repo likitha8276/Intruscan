@@ -575,6 +575,29 @@ class CachedLLM:
         return output
 
 
+_KNOWN_TOOLS = ("get_logs", "expand_graph")
+
+def _rescue_failed_tool_call(body_text: str):
+    """Groq rejects tool-looking JSON when no tools are declared (HTTP 400,
+    tool_use_failed). The model's request is in failed_generation, so
+    recover it as plain {"tool":..., "args":...} JSON for the agent loop."""
+    try:
+        failed = json.loads(body_text)["error"]["failed_generation"]
+        obj = json.loads(failed) if isinstance(failed, str) else failed
+    except (ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    args = obj.get("arguments")
+    if isinstance(args, dict) and "tool" in args:       # {"name":"assistant","arguments":{"tool":..}}
+        obj = args
+    elif obj.get("name") in _KNOWN_TOOLS and isinstance(args, dict):  # {"name":"get_logs","arguments":{..}}
+        return json.dumps({"tool": obj["name"], "args": args})
+    if obj.get("tool") in _KNOWN_TOOLS:
+        return json.dumps({"tool": obj["tool"], "args": obj.get("args") or {}})
+    return None
+
+
 class GroqClient:
     """Cloud LLM client using Groq's OpenAI-compatible chat API."""
 
@@ -622,6 +645,10 @@ class GroqClient:
                 break
             except urllib.error.HTTPError as exc:
                 body_text = exc.read().decode("utf-8", "replace")
+                if exc.code == 400 and "tool_use_failed" in body_text:
+                    rescued = _rescue_failed_tool_call(body_text)
+                    if rescued:
+                        return rescued
                 transient = exc.code == 429 or 500 <= exc.code <= 599
                 if transient and attempt + 1 < self.max_attempts:
                     wait = min(2 ** attempt, 8)
