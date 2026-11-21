@@ -1,0 +1,15 @@
+services:
+  intruscan-soc:
+    build: .
+    container_name: intruscan_soc_dashboard
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    environment:
+      - INTRUSCAN_SCORED=demo_data/scored_flows.jsonl
+      - INTRUSCAN_INCIDENT_DB=demo_data/incidents.db
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

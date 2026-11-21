@@ -8,7 +8,7 @@ Everything here reads the project's real outputs: the scored-flow JSONL written 
 from __future__ import annotations
 
 import json
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,7 +32,7 @@ def load_scored_flows(path: str | Path | None, max_rows: int = 200_000) -> Loade
     """Load a scored JSONL (most recent ``max_rows`` rows if larger). Missing file -> empty."""
     if not path or not Path(path).is_file():
         return LoadedFlows(pd.DataFrame(), 0, False)
-    rows: list[dict[str, Any]] = []
+    rows: deque[dict[str, Any]] = deque(maxlen=max_rows)
     invalid = 0
     total = 0
     with open(path, encoding="utf-8") as source:
@@ -48,9 +48,7 @@ def load_scored_flows(path: str | Path | None, max_rows: int = 200_000) -> Loade
                 invalid += 1
                 continue
             rows.append(row)
-            if len(rows) > max_rows:
-                rows.pop(0)
-    return LoadedFlows(pd.DataFrame(rows), invalid, total - invalid > max_rows)
+    return LoadedFlows(pd.DataFrame(list(rows)), invalid, total - invalid > max_rows)
 
 
 def route_counts(frame: pd.DataFrame) -> dict[str, int]:

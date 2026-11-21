@@ -20,6 +20,7 @@ rag_soc_alerts_final.jsonl
 .pytest_cache/
 # Local datasets, trained models and generated outputs
 data/
+!demo_data/
 backup_threshold_calibration/
 .pytest_cache/
 .venv/

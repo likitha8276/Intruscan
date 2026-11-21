@@ -1,0 +1,16 @@
+.venv
+.venv_research
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.git
+.gitignore
+scored_flows.jsonl
+incidents.db
+archive
+figures_final_20261024
+final_results_backup_20261023_185519
+smoke/uploads
+scratch

@@ -75,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common.add_argument("--model", default="openai/gpt-oss-20b", help="Groq model name")
     common.add_argument("--tau", type=float, default=0.7)
+    common.add_argument(
+        "--format",
+        choices=["json", "report", "summary"],
+        default="json",
+        help="Output format: json (default), report (formatted SOC report), or summary",
+    )
 
     parser = argparse.ArgumentParser(prog="soc_agent", parents=[common])
     sub = parser.add_subparsers(dest="cmd")
@@ -126,27 +132,61 @@ def main(argv=None) -> None:
     )
     res = agent.run(scn)
     decision = res.decision
-    print(
-        json.dumps(
-            {
-                "outcome": decision.outcome.value,
-                "action": None
-                if decision.action is None
-                else {"type": decision.action.type, "target": decision.action.target},
-                "reasons": decision.reasons,
-                "verdicts": res.verdicts,
-                "gate_flags": res.gate_flags,
-                "llm_ms": round(res.llm_ms, 1),
-                "verify_ms": round(res.verify_ms, 2),
-                "llm_ms": round(res.llm_ms, 1),
-                "verify_ms": round(res.verify_ms, 2),
-                "tool_steps": res.tool_steps,
-                "revised": res.revised,
-                "llm_error": res.llm_error,
-            },
-            indent=2,
+    result_payload = {
+        "outcome": decision.outcome.value,
+        "action": None
+        if decision.action is None
+        else {"type": decision.action.type, "target": decision.action.target},
+        "reasons": decision.reasons,
+        "verdicts": res.verdicts,
+        "gate_flags": res.gate_flags,
+        "llm_ms": round(res.llm_ms, 1),
+        "verify_ms": round(res.verify_ms, 2),
+        "tool_steps": res.tool_steps,
+        "revised": res.revised,
+        "llm_error": res.llm_error,
+    }
+
+    if getattr(args, "format", "json") == "report":
+        action_str = (
+            f"{result_payload['action']['type']} -> {result_payload['action']['target']}"
+            if result_payload["action"]
+            else "None (No active containment authorized)"
         )
-    )
+        verdicts_str = ", ".join(result_payload["verdicts"]) or "None"
+        gate_flags_str = ", ".join(result_payload["gate_flags"]) or "None (Clean)"
+        reasons_str = "\n  - ".join(result_payload["reasons"]) or "None"
+
+        print("=" * 80)
+        print("                🛡️  INTRUSCAN SOC INVESTIGATION REPORT")
+        print("=" * 80)
+        print(f"Target Entities:      {', '.join(entities)}")
+        print(f"Triage Decision:      [{result_payload['outcome']}]")
+        print(f"Authorized Action:    {action_str}")
+        print("-" * 80)
+        print("--- VERIFIER & RISK GATING ---")
+        print(f"Claim Verdicts:       {verdicts_str}")
+        print(f"Risk Gate Flags:      {gate_flags_str}")
+        print(f"Decision Reasons:\n  - {reasons_str}")
+        if result_payload["tool_steps"]:
+            print(f"Investigation Steps:  {len(result_payload['tool_steps'])} tool calls executed")
+        print("-" * 80)
+        print("--- TIMING & TELEMETRY ---")
+        print(f"LLM Latency:          {result_payload['llm_ms']} ms")
+        print(f"Deterministic Verif.: {result_payload['verify_ms']} ms")
+        if result_payload["llm_error"]:
+            print(f"LLM Error/Warning:    {result_payload['llm_error']}")
+        print("=" * 80)
+    elif getattr(args, "format", "json") == "summary":
+        action_tag = result_payload["action"]["type"] if result_payload["action"] else "NONE"
+        print(
+            f"[INTRUSCAN SOC] Outcome: {result_payload['outcome']} | Action: {action_tag} | "
+            f"Verdicts: {','.join(result_payload['verdicts']) or 'EMPTY'} | "
+            f"Gate: {','.join(result_payload['gate_flags']) or 'CLEAR'} | "
+            f"Latency: {result_payload['llm_ms']}ms"
+        )
+    else:
+        print(json.dumps(result_payload, indent=2))
 
 
 if __name__ == "__main__":
